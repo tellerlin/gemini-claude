@@ -210,7 +210,8 @@ setup_app_environment() {
     else
         # Copy application files (fallback method)
         log_info "Copying application files..."
-        cp -r "$SCRIPT_DIR/"* "$APP_DIR/" || log_error "Failed to copy application files"
+        # SCRIPT_DIR is /home/dev/文档/GitHub/gemini-claude/scripts, we need to copy from parent directory
+        cp -r "$(dirname "$SCRIPT_DIR")"/* "$APP_DIR/" || log_error "Failed to copy application files"
         log_success "Application files copied to $APP_DIR."
     fi
     
