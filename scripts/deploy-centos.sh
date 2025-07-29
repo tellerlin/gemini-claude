@@ -342,6 +342,13 @@ configure_nginx() {
     # Remove default site
     rm -f /etc/nginx/conf.d/default.conf
     
+    # Create rate limiting configuration
+    local rate_limit_conf="/etc/nginx/conf.d/rate-limit.conf"
+    cat > "$rate_limit_conf" << 'EOF'
+# Rate limiting configuration
+limit_req_zone $binary_remote_addr zone=api:10m rate=30r/s;
+EOF
+
     local nginx_conf="/etc/nginx/conf.d/gemini-adapter.conf"
     
     cat > "$nginx_conf" << 'EOF'
@@ -357,7 +364,6 @@ server {
     add_header Referrer-Policy "no-referrer-when-downgrade" always;
 
     # Rate limiting
-    limit_req_zone $binary_remote_addr zone=api:10m rate=30r/s;
     limit_req zone=api burst=60 nodelay;
 
     client_max_body_size 10M;
