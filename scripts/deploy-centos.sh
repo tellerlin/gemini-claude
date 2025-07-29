@@ -86,29 +86,62 @@ install_dependencies() {
     if ! $PKG_MANAGER install -y nginx; then
         log_warning "Failed to install nginx from EPEL, trying alternative method..."
         
-        # Try to enable PowerTools repository (for CentOS Stream 8)
+        # Check and remove exclude filters that might block nginx
+        log_info "Checking for repository exclude filters..."
         if command -v dnf &> /dev/null; then
-            dnf config-manager --enable powertools || log_warning "Failed to enable PowerTools"
-        else
-            yum-config-manager --enable powertools || log_warning "Failed to enable PowerTools"
-        fi
-        
-        # Try installing nginx again
-        if ! $PKG_MANAGER install -y nginx; then
-            log_warning "Still failed to install nginx, adding official nginx repository..."
-            
-            # Add official nginx repository
-            cat > /etc/yum.repos.d/nginx.repo << 'EOF'
+            # Try to install with disableexcludes
+            if ! dnf install -y nginx --disableexcludes=all; then
+                log_warning "Failed to install with disableexcludes, trying PowerTools..."
+                
+                # Try to enable PowerTools repository (for CentOS Stream 8)
+                dnf config-manager --enable powertools || log_warning "Failed to enable PowerTools"
+                
+                # Try installing nginx again
+                if ! dnf install -y nginx --disableexcludes=all; then
+                    log_warning "Still failed to install nginx, adding official nginx repository..."
+                    
+                    # Add official nginx repository
+                    cat > /etc/yum.repos.d/nginx.repo << 'EOF'
 [nginx-stable]
 name=nginx stable repo
 baseurl=http://nginx.org/packages/centos/$releasever/$basearch/
 gpgcheck=0
 enabled=1
+exclude=
 EOF
-            
-            # Update package cache and try again
-            $PKG_MANAGER update -y
-            $PKG_MANAGER install -y nginx || log_error "Failed to install nginx. Please check repository configuration."
+                    
+                    # Update package cache and try again
+                    dnf update -y
+                    dnf install -y nginx --disableexcludes=all || log_error "Failed to install nginx. Please check repository configuration."
+                fi
+            fi
+        else
+            # For yum systems
+            if ! yum install -y nginx --disableexcludes=all; then
+                log_warning "Failed to install with disableexcludes, trying PowerTools..."
+                
+                # Try to enable PowerTools repository
+                yum-config-manager --enable powertools || log_warning "Failed to enable PowerTools"
+                
+                # Try installing nginx again
+                if ! yum install -y nginx --disableexcludes=all; then
+                    log_warning "Still failed to install nginx, adding official nginx repository..."
+                    
+                    # Add official nginx repository
+                    cat > /etc/yum.repos.d/nginx.repo << 'EOF'
+[nginx-stable]
+name=nginx stable repo
+baseurl=http://nginx.org/packages/centos/$releasever/$basearch/
+gpgcheck=0
+enabled=1
+exclude=
+EOF
+                    
+                    # Update package cache and try again
+                    yum update -y
+                    yum install -y nginx --disableexcludes=all || log_error "Failed to install nginx. Please check repository configuration."
+                fi
+            fi
         fi
     fi
     
