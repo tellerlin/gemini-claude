@@ -97,6 +97,31 @@ sudo bash scripts/deploy-centos.sh
 - Rocky Linux 8, 9
 - AlmaLinux 8, 9
 
+### 📝 Post-Deployment Configuration
+
+The deployment script automatically creates a `.env` file (copied from `.env.example`). You need to edit it to configure your API keys:
+
+```bash
+# Edit .env file
+sudo nano /home/gemini/gemini-claude/.env
+
+# Add your Gemini API keys
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
+
+# Start the service
+gemini-manage restart
+
+# Check service status
+gemini-manage status
+```
+
+**Important Configuration Options:**
+- `GEMINI_API_KEYS`: Your Gemini API keys, separated by commas
+- `PROXY_URL`: Uncomment and set if you need to use a proxy
+- `MAX_FAILURES`: Failure threshold (recommended: 1-3)
+- `COOLING_PERIOD`: Cooldown time in seconds (recommended: 300)
+- `REQUEST_TIMEOUT`: Request timeout in seconds (recommended: 45)
+
 ## 📡 API Endpoints
 
 ### Chat Completion

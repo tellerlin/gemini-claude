@@ -150,11 +150,19 @@ setup_app_environment() {
 }
 
 create_env_file() {
-    log_info "Creating .env template..."
+    log_info "Setting up environment configuration..."
     local env_file="$APP_DIR/.env"
+    local env_example="$APP_DIR/.env.example"
 
+    # Copy .env.example to .env if .env doesn't exist
     if [[ ! -f "$env_file" ]]; then
-        cat > "$env_file" << 'EOF'
+        if [[ -f "$env_example" ]]; then
+            log_info "Copying .env.example to .env..."
+            cp "$env_example" "$env_file"
+            log_success ".env file created from .env.example."
+        else
+            log_warning ".env.example not found, creating minimal .env template..."
+            cat > "$env_file" << 'EOF'
 # --- Required Configuration ---
 # Add your Gemini API keys here, separated by commas
 # Get your keys from: https://makersuite.google.com/app/apikey
@@ -183,12 +191,15 @@ MAX_RETRIES=2
 # How often to check key status (in seconds)
 HEALTH_CHECK_INTERVAL=60
 EOF
-        chown "$APP_USER:$APP_USER" "$env_file"
-        chmod 600 "$env_file"  # Secure permissions for sensitive data
-        log_success ".env template created."
+            log_success ".env template created."
+        fi
     else
         log_info ".env file already exists, skipping creation."
     fi
+    
+    # Set secure permissions
+    chown "$APP_USER:$APP_USER" "$env_file"
+    chmod 600 "$env_file"  # Secure permissions for sensitive data
 }
 
 configure_supervisor() {

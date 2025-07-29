@@ -97,6 +97,31 @@ sudo bash scripts/deploy-centos.sh
 - Rocky Linux 8, 9
 - AlmaLinux 8, 9
 
+### 📝 部署后配置
+
+部署脚本会自动创建 `.env` 文件（从 `.env.example` 复制），你需要编辑它来配置你的 API 密钥：
+
+```bash
+# 编辑 .env 文件
+sudo nano /home/gemini/gemini-claude/.env
+
+# 添加你的 Gemini API 密钥
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
+
+# 启动服务
+gemini-manage restart
+
+# 检查服务状态
+gemini-manage status
+```
+
+**重要配置项：**
+- `GEMINI_API_KEYS`: 你的 Gemini API 密钥，多个密钥用逗号分隔
+- `PROXY_URL`: 如果需要使用代理，取消注释并设置
+- `MAX_FAILURES`: 失败次数阈值（推荐：1-3）
+- `COOLING_PERIOD`: 冷却时间秒数（推荐：300）
+- `REQUEST_TIMEOUT`: 请求超时秒数（推荐：45）
+
 ## 📡 API 端点
 
 ### 聊天完成
