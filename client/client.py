@@ -72,7 +72,7 @@ class RemoteGeminiClient:
                 last_error = f"Request timeout: {e}"
                 if attempt < self.config.retries:
                     wait_time = min(2 ** attempt, 30)  # Max 30 seconds
-                    print(f"请求超时，{wait_time}秒后重试... (尝试 {attempt + 1}/{self.config.retries + 1})")
+                    print(f"Request timeout, retrying in {wait_time} seconds... (Attempt {attempt + 1}/{self.config.retries + 1})")
                     await asyncio.sleep(wait_time)
                 else:
                     raise Exception(last_error)
@@ -82,7 +82,7 @@ class RemoteGeminiClient:
                 # Connection errors usually don't benefit from retries unless it's intermittent
                 if attempt < self.config.retries:
                     wait_time = min(2 ** attempt, 15)
-                    print(f"连接错误，{wait_time}秒后重试... (尝试 {attempt + 1}/{self.config.retries + 1})")
+                    print(f"Connection error, retrying in {wait_time} seconds... (Attempt {attempt + 1}/{self.config.retries + 1})")
                     await asyncio.sleep(wait_time)
                 else:
                     raise Exception(last_error)
@@ -90,20 +90,20 @@ class RemoteGeminiClient:
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code
                 if status_code == 503:
-                    last_error = "服务暂时不可用 (所有API密钥可能都在冷却中)"
+                    last_error = "Service temporarily unavailable (all API keys may be cooling down)"
                 elif status_code == 502:
-                    last_error = "网关错误 (后端服务不可用)"
+                    last_error = "Gateway error (backend service unavailable)"
                 elif status_code == 429:
-                    last_error = "请求频率过高，请稍后再试"
+                    last_error = "Request rate too high, please try again later"
                 elif status_code == 400:
-                    last_error = f"请求格式错误: {e.response.text}"
+                    last_error = f"Request format error: {e.response.text}"
                     break  # Don't retry on client errors
                 else:
                     last_error = f"HTTP {status_code}: {e.response.text}"
                 
                 if attempt < self.config.retries:
                     wait_time = min(2 ** attempt, 10)
-                    print(f"服务器错误，{wait_time}秒后重试... (尝试 {attempt + 1}/{self.config.retries + 1})")
+                    print(f"Server error, retrying in {wait_time} seconds... (Attempt {attempt + 1}/{self.config.retries + 1})")
                     await asyncio.sleep(wait_time)
                 else:
                     raise Exception(last_error)
@@ -112,12 +112,12 @@ class RemoteGeminiClient:
                 last_error = f"未知错误: {e}"
                 if attempt < self.config.retries:
                     wait_time = min(2 ** attempt, 5)
-                    print(f"未知错误，{wait_time}秒后重试... (尝试 {attempt + 1}/{self.config.retries + 1})")
+                    print(f"Unknown error, retrying in {wait_time} seconds... (Attempt {attempt + 1}/{self.config.retries + 1})")
                     await asyncio.sleep(wait_time)
                 else:
                     raise Exception(last_error)
         
-        raise Exception(f"请求失败: {last_error}")
+        raise Exception(f"Request failed: {last_error}")
     
     async def _stream_request(self, url: str, payload: Dict) -> AsyncGenerator[Dict, None]:
         """Handle streaming requests"""
@@ -168,24 +168,24 @@ class InteractiveChat:
     
     async def start_interactive_chat(self):
         """Start interactive chat session"""
-        print("🤖 Gemini Claude Adapter - 交互式聊天")
-        print("输入 'quit' 或 'exit' 退出聊天")
-        print("输入 'clear' 清除对话历史")
-        print("输入 'health' 检查服务器状态")
-        print("输入 'stats' 查看服务器统计")
+        print("🤖 Gemini Claude Adapter - Interactive Chat")
+        print("Type 'quit' or 'exit' to exit chat")
+        print("Type 'clear' to clear conversation history")
+        print("Type 'health' to check server status")
+        print("Type 'stats' to view server statistics")
         print("-" * 50)
         
         while True:
             try:
                 user_input = input("\n你: ").strip()
                 
-                if user_input.lower() in ['quit', 'exit', '退出']:
-                    print("再见！")
+                if user_input.lower() in ['quit', 'exit']:
+                    print("Goodbye!")
                     break
                 
                 if user_input.lower() == 'clear':
                     self.conversation_history = []
-                    print("对话历史已清除")
+                    print("Conversation history cleared")
                     continue
                 
                 if user_input.lower() == 'health':
@@ -224,34 +224,34 @@ class InteractiveChat:
                     self.conversation_history.append({"role": "assistant", "content": full_response})
                 
             except KeyboardInterrupt:
-                print("\n\n再见！")
+                print("\n\nGoodbye!")
                 break
             except Exception as e:
-                print(f"\n错误: {e}")
+                print(f"\nError: {e}")
     
     async def _show_health(self):
         """Show server health"""
         health = await self.client.get_server_health()
         if 'error' in health:
-            print(f"❌ 服务器健康检查失败: {health['error']}")
+            print(f"❌ Server health check failed: {health['error']}")
         else:
             status = health.get('status', 'unknown')
             active_keys = health.get('active_keys', 0)
             total_keys = health.get('total_keys', 0)
-            print(f"✅ 服务器状态: {status}")
-            print(f"🔑 活跃密钥: {active_keys}/{total_keys}")
+            print(f"✅ Server status: {status}")
+            print(f"🔑 Active keys: {active_keys}/{total_keys}")
     
     async def _show_stats(self):
         """Show server statistics"""
         stats = await self.client.get_server_stats()
         if 'error' in stats:
-            print(f"❌ 获取统计信息失败: {stats['error']}")
+            print(f"❌ Failed to get statistics: {stats['error']}")
         else:
-            print("📊 服务器统计:")
-            print(f"  总密钥数: {stats.get('total_keys', 0)}")
-            print(f"  活跃密钥: {stats.get('active_keys', 0)}")
-            print(f"  冷却密钥: {stats.get('cooling_keys', 0)}")
-            print(f"  失败密钥: {stats.get('failed_keys', 0)}")
+            print("📊 Server Statistics:")
+            print(f"  Total keys: {stats.get('total_keys', 0)}")
+            print(f"  Active keys: {stats.get('active_keys', 0)}")
+            print(f"  Cooling keys: {stats.get('cooling_keys', 0)}")
+            print(f"  Failed keys: {stats.get('failed_keys', 0)}")
 
 async def main():
     parser = argparse.ArgumentParser(description="Gemini Claude Adapter Client")
@@ -279,22 +279,22 @@ async def main():
     
     try:
         # Test connection
-        print("正在连接到服务器...")
+        print("Connecting to server...")
         health = await client.get_server_health()
         if 'error' in health:
-            print(f"❌ 连接失败: {health['error']}")
+            print(f"❌ Connection failed: {health['error']}")
             return 1
         
-        print("✅ 连接成功!")
+        print("✅ Connection successful!")
         
         # Start interactive chat
         chat = InteractiveChat(client)
         await chat.start_interactive_chat()
         
     except KeyboardInterrupt:
-        print("\n程序已终止")
+        print("\nProgram terminated")
     except Exception as e:
-        print(f"❌ 错误: {e}")
+        print(f"❌ Error: {e}")
         return 1
     finally:
         await client.close()

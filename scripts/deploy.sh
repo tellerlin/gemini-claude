@@ -242,8 +242,8 @@ server {
     add_header Referrer-Policy "no-referrer-when-downgrade" always;
 
     # Rate limiting
-    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
-    limit_req zone=api burst=20 nodelay;
+    limit_req_zone $binary_remote_addr zone=api:10m rate=30r/s;
+    limit_req zone=api burst=60 nodelay;
 
     client_max_body_size 10M;
     client_body_timeout 60s;
@@ -266,8 +266,8 @@ server {
         proxy_set_header Connection "";
         
         # Handle WebSocket upgrades if needed
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        # proxy_set_header Upgrade $http_upgrade;
+        # proxy_set_header Connection "upgrade";
     }
 
     location /health {
@@ -483,8 +483,8 @@ perform_system_optimizations() {
     # Increase file descriptor limits
     cat >> /etc/security/limits.conf << 'EOF'
 # Gemini Adapter optimizations
-gemini soft nofile 65536
-gemini hard nofile 65536
+gemini soft nofile 32768
+gemini hard nofile 32768
 EOF
 
     # Configure systemd service limits
@@ -590,7 +590,7 @@ main() {
     echo ""
     echo "⏱️  Total deployment time: ${duration} seconds"
     echo ""
-    log_warning "⚠️  IMPORTANT: Complete these final steps:"
+    log_info "⚠️  IMPORTANT: Complete these final steps:"
     echo ""
     echo "1. 📝 Configure your API keys:"
     echo "   sudo nano $APP_DIR/.env"

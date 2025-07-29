@@ -303,11 +303,11 @@ async def lifespan(app: FastAPI):
         config = GeminiConfig(
             api_keys=api_keys,
             proxy_url=os.getenv("PROXY_URL"),
-            max_failures=int(os.getenv("MAX_FAILURES", "3")),
+            max_failures=int(os.getenv("MAX_FAILURES", "1")),
             cooling_period=int(os.getenv("COOLING_PERIOD", "300")),
             health_check_interval=int(os.getenv("HEALTH_CHECK_INTERVAL", "60")),
             request_timeout=int(os.getenv("REQUEST_TIMEOUT", "45")),
-            max_retries=int(os.getenv("MAX_RETRIES", "2"))
+            max_retries=int(os.getenv("MAX_RETRIES", "0"))
         )
         
         key_manager = GeminiKeyManager(config)
