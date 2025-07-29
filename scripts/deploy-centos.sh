@@ -62,13 +62,12 @@ install_dependencies() {
     # Install EPEL repository
     $PKG_MANAGER install -y epel-release || log_error "Failed to install EPEL repository"
     
-    # Install essential packages
+    # Install essential packages (excluding nginx for now)
     local packages=(
         python3
         python3-devel
         python3-pip
         git
-        nginx
         supervisor
         policycoreutils-python-utils
         htop
@@ -82,28 +81,67 @@ install_dependencies() {
         $PKG_MANAGER install -y "$package" || log_error "Failed to install $package"
     done
     
+    # Install nginx from EPEL
+    log_info "Installing nginx from EPEL..."
+    if ! $PKG_MANAGER install -y nginx; then
+        log_warning "Failed to install nginx from EPEL, trying alternative method..."
+        
+        # Try to enable PowerTools repository (for CentOS Stream 8)
+        if command -v dnf &> /dev/null; then
+            dnf config-manager --enable powertools || log_warning "Failed to enable PowerTools"
+        else
+            yum-config-manager --enable powertools || log_warning "Failed to enable PowerTools"
+        fi
+        
+        # Try installing nginx again
+        if ! $PKG_MANAGER install -y nginx; then
+            log_warning "Still failed to install nginx, adding official nginx repository..."
+            
+            # Add official nginx repository
+            cat > /etc/yum.repos.d/nginx.repo << 'EOF'
+[nginx-stable]
+name=nginx stable repo
+baseurl=http://nginx.org/packages/centos/$releasever/$basearch/
+gpgcheck=0
+enabled=1
+EOF
+            
+            # Update package cache and try again
+            $PKG_MANAGER update -y
+            $PKG_MANAGER install -y nginx || log_error "Failed to install nginx. Please check repository configuration."
+        fi
+    fi
+    
     # Install Python 3.11 if not available
     if ! python3.11 --version &> /dev/null 2>&1; then
         log_info "Installing Python 3.11..."
         
-        # Install Python 3.11 from EPEL or SCL
-        if $PKG_MANAGER list installed python3.11 &> /dev/null 2>&1; then
-            log_info "Python 3.11 already installed"
+        # Try different methods to install Python 3.11
+        if $PKG_MANAGER install -y python3.11 python3.11-devel python3.11-pip &> /dev/null 2>&1; then
+            log_success "Python 3.11 installed from EPEL"
         else
-            # Try to install from EPEL first
-            if $PKG_MANAGER install -y python3.11 python3.11-devel python3.11-pip &> /dev/null 2>&1; then
-                log_success "Python 3.11 installed from EPEL"
-            else
-                log_warning "Python 3.11 not available in EPEL, installing from SCL"
-                $PKG_MANAGER install -y centos-release-scl || log_error "Failed to install SCL"
+            log_warning "Python 3.11 not available in EPEL, trying alternative methods..."
+            
+            # Try from SCL (Software Collections)
+            if $PKG_MANAGER install -y centos-release-scl &> /dev/null 2>&1; then
                 $PKG_MANAGER update -y
-                $PKG_MANAGER install -y rh-python311 || log_error "Failed to install Python 3.11 from SCL"
-                
-                # Create symlink for python3.11
-                ln -sf /opt/rh/rh-python311/root/bin/python3.11 /usr/bin/python3.11 || log_warning "Failed to create python3.11 symlink"
-                ln -sf /opt/rh/rh-python311/root/bin/pip3.11 /usr/bin/pip3.11 || log_warning "Failed to create pip3.11 symlink"
+                if $PKG_MANAGER install -y rh-python311 &> /dev/null 2>&1; then
+                    log_success "Python 3.11 installed from SCL"
+                    # Create symlinks for easier access
+                    ln -sf /opt/rh/rh-python311/root/bin/python3.11 /usr/bin/python3.11 || log_warning "Failed to create python3.11 symlink"
+                    ln -sf /opt/rh/rh-python311/root/bin/pip3.11 /usr/bin/pip3.11 || log_warning "Failed to create pip3.11 symlink"
+                else
+                    log_warning "Failed to install Python 3.11 from SCL, will use system Python 3.6"
+                fi
+            else
+                log_warning "Cannot install SCL, will use system Python 3.6"
             fi
         fi
+    fi
+    
+    # Check if we have at least Python 3.6
+    if ! python3 --version &> /dev/null 2>&1; then
+        log_error "No Python 3 found on system"
     fi
     
     log_success "Dependencies installed successfully."
@@ -149,14 +187,19 @@ setup_app_environment() {
     # Create Python virtual environment
     log_info "Creating Python virtual environment..."
     
-    # Determine python3.11 path
+    # Determine Python command (prefer 3.11, fallback to 3.x)
     if command -v python3.11 &> /dev/null; then
         PYTHON_CMD="python3.11"
+        log_info "Using Python 3.11 for virtual environment"
     elif command -v python3 &> /dev/null; then
         PYTHON_CMD="python3"
+        log_info "Using system Python 3 for virtual environment"
     else
-        log_error "Python 3 not found"
+        log_error "No Python 3 found on system"
     fi
+    
+    # Show Python version
+    log_info "Python version: $($PYTHON_CMD --version)"
     
     sudo -u "$APP_USER" -H "$PYTHON_CMD" -m venv "$APP_DIR/venv" || \
         log_error "Failed to create virtual environment"
