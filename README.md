@@ -2,6 +2,8 @@
 
 高性能的 Gemini Claude 适配器，专为 Claude Code 和本地客户端设计，支持多 API 密钥轮换、自动故障恢复和流式响应。
 
+[🇨🇳 中文版本](README.md) | [🇺🇸 English Version](README.en.md)
+
 ## ✨ 核心特性
 
 - 🚀 **极速响应** - 优化的请求处理和密钥轮换算法
@@ -61,6 +63,14 @@
 
 使用自动化部署脚本（推荐 Ubuntu 22.04）：
 
+**方法 1：使用 Git Clone（推荐）**
+```bash
+# 设置环境变量并运行部署
+export GITHUB_REPO_URL=https://github.com/tellerlin/gemini-claude.git
+sudo bash scripts/deploy.sh
+```
+
+**方法 2：手动上传**
 ```bash
 # 上传项目到 VPS
 scp -r gemini-claude/ user@your-vps-ip:~/
@@ -235,3 +245,7 @@ MIT License
 ## 📞 支持
 
 如有问题，请查看文档或提交 Issue。
+
+---
+
+**[🇨🇳 中文版本](README.md)** | **[🇺🇸 Switch to English](README.en.md)**

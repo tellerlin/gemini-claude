@@ -113,13 +113,20 @@ setup_app_environment() {
     # Create application directory
     mkdir -p "$APP_DIR"
     
-    # Copy application files
-    log_info "Copying application files..."
-    cp -r "$SCRIPT_DIR/"* "$APP_DIR/" || log_error "Failed to copy application files"
+    # Check if git is available and repository URL is provided
+    if command -v git &> /dev/null && [[ -n "${GITHUB_REPO_URL:-}" ]]; then
+        log_info "Cloning from GitHub repository: $GITHUB_REPO_URL"
+        sudo -u "$APP_USER" -H git clone "$GITHUB_REPO_URL" "$APP_DIR" || log_error "Failed to clone repository"
+        log_success "Repository cloned to $APP_DIR."
+    else
+        # Copy application files (fallback method)
+        log_info "Copying application files..."
+        cp -r "$SCRIPT_DIR/"* "$APP_DIR/" || log_error "Failed to copy application files"
+        log_success "Application files copied to $APP_DIR."
+    fi
     
     # Set correct ownership
     chown -R "$APP_USER:$APP_USER" "$APP_DIR"
-    log_success "Application files copied to $APP_DIR."
     
     # Create Python virtual environment
     log_info "Creating Python virtual environment..."
@@ -612,6 +619,9 @@ main() {
     echo "📋 Next steps:"
     echo "   - Configure your IDE/Claude Code to use: http://$server_ip/v1"
     echo "   - Use any non-empty string as API key in your client"
+    echo ""
+    echo "💡 Alternative deployment method (using git clone):"
+    echo "   GITHUB_REPO_URL=https://github.com/tellerlin/gemini-claude.git sudo bash scripts/deploy.sh"
     echo ""
     log_info "Installation complete! Check the deployment log at: $LOG_FILE"
 }
