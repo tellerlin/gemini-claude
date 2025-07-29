@@ -61,27 +61,41 @@ The server will start at `http://localhost:8000`.
 
 ### Production Deployment
 
-Use the automated deployment script (Ubuntu 22.04 recommended):
+Use the automated deployment script:
 
-**Method 1: Using Git Clone (Recommended)**
+#### Ubuntu/Debian Systems
 ```bash
-# Set environment variable and run deployment
+# Method 1: Using Git Clone (Recommended)
 export GITHUB_REPO_URL=https://github.com/tellerlin/gemini-claude.git
 sudo bash scripts/deploy.sh
-```
 
-**Method 2: Manual Upload**
-```bash
-# Upload project to VPS
+# Method 2: Manual Upload
 scp -r gemini-claude/ user@your-vps-ip:~/
-
-# SSH to VPS
 ssh user@your-vps-ip
-
-# Run deployment script
 cd gemini-claude
 sudo bash scripts/deploy.sh
 ```
+
+#### CentOS/RHEL Systems
+```bash
+# Method 1: Using Git Clone (Recommended)
+export GITHUB_REPO_URL=https://github.com/tellerlin/gemini-claude.git
+sudo bash scripts/deploy-centos.sh
+
+# Method 2: Manual Upload
+scp -r gemini-claude/ user@your-vps-ip:~/
+ssh user@your-vps-ip
+cd gemini-claude
+sudo bash scripts/deploy-centos.sh
+```
+
+**Supported System Versions:**
+- Ubuntu 20.04, 22.04, 24.04
+- Debian 11, 12
+- CentOS Stream 8, 9
+- RHEL 8, 9
+- Rocky Linux 8, 9
+- AlmaLinux 8, 9
 
 ## 📡 API Endpoints
 

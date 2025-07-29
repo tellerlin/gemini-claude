@@ -61,27 +61,41 @@
 
 ### 生产部署
 
-使用自动化部署脚本（推荐 Ubuntu 22.04）：
+使用自动化部署脚本：
 
-**方法 1：使用 Git Clone（推荐）**
+#### Ubuntu/Debian 系统
 ```bash
-# 设置环境变量并运行部署
+# 方法 1：使用 Git Clone（推荐）
 export GITHUB_REPO_URL=https://github.com/tellerlin/gemini-claude.git
 sudo bash scripts/deploy.sh
-```
 
-**方法 2：手动上传**
-```bash
-# 上传项目到 VPS
+# 方法 2：手动上传
 scp -r gemini-claude/ user@your-vps-ip:~/
-
-# SSH 连接到 VPS
 ssh user@your-vps-ip
-
-# 运行部署脚本
 cd gemini-claude
 sudo bash scripts/deploy.sh
 ```
+
+#### CentOS/RHEL 系统
+```bash
+# 方法 1：使用 Git Clone（推荐）
+export GITHUB_REPO_URL=https://github.com/tellerlin/gemini-claude.git
+sudo bash scripts/deploy-centos.sh
+
+# 方法 2：手动上传
+scp -r gemini-claude/ user@your-vps-ip:~/
+ssh user@your-vps-ip
+cd gemini-claude
+sudo bash scripts/deploy-centos.sh
+```
+
+**支持的系统版本：**
+- Ubuntu 20.04, 22.04, 24.04
+- Debian 11, 12
+- CentOS Stream 8, 9
+- RHEL 8, 9
+- Rocky Linux 8, 9
+- AlmaLinux 8, 9
 
 ## 📡 API 端点
 
