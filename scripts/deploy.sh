@@ -470,7 +470,7 @@ case "$1" in
         ;;
     status) 
         echo "=== Service Status ==="
-        local status=$(check_service_status)
+        status=$(check_service_status)
         echo "Service status: $status"
         
         if command -v supervisorctl &> /dev/null && systemctl is-active --quiet supervisord; then
