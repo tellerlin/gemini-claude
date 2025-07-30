@@ -1,344 +1,187 @@
 # Gemini Claude Adapter
 
-高性能的 Gemini Claude 适配器，专为 Claude Code 和本地客户端设计，支持多 API 密钥轮换、自动故障恢复和流式响应。
+A high-performance, secure Gemini adapter designed for clients like Claude Code, featuring multi-API key rotation, automatic failover, robust security, and streaming support.
 
-[🇨🇳 中文版本](README.md) | [🇺🇸 English Version](README.en.md)
+[🇨🇳 中文版本](README.zh.md) | [🇺🇸 English Version](README.md)
 
-## ✨ 核心特性
+## ✨ Key Features
 
-- 🚀 **极速响应** - 优化的请求处理和密钥轮换算法
-- 🔑 **智能密钥管理** - 失败密钥立即冷却，自动切换到下一个可用密钥
-- 🌐 **完全兼容** - 兼容 Claude Code 和 OpenAI API 格式
-- ⚡ **流式支持** - 原生支持流式聊天响应
-- 🛡️ **企业级特性** - 代理支持、CORS 处理、错误恢复
-- 📊 **实时监控** - 详细的服务状态和密钥使用统计
+-   🚀 **Ultra-fast Response**: Optimized request handling and smart key rotation.
+-   🔑 **Smart Key Management**: Failed Gemini keys are immediately placed in a cool-down period, with automatic failover to the next available key.
+-   🛡️ **Robust Security**: Enforced API key authentication for all sensitive endpoints using client and admin keys.
+-   🌐 **Full Compatibility**: Compatible with clients that use the OpenAI API format, including Claude Code.
+-   ⚡ **Streaming Support**: Native support for streaming chat responses.
+-   📊 **Real-time Monitoring**: Endpoints for service health, key status, and usage statistics.
+-   🐳 **Simplified Docker Deployment**: Quick and secure setup using Docker and Docker Compose.
 
-## 🎯 设计目标
+## 🔒 Security First: Understanding Authentication
 
-- **响应最快**: 优化的密钥轮换策略，失败立即切换
-- **兼容性最强**: 支持 Claude Code 和各种客户端
-- **稳定性最高**: 自动故障恢复和密钥冷却机制
+This adapter enforces API key authentication to protect your service. There are two levels of access:
 
-## 🚀 快速开始
+1.  **Client Keys (`ADAPTER_API_KEYS`)**: For standard users. These keys grant access to core functionalities like chat completions (`/v1/chat/completions`) and listing models (`/v1/models`).
+2.  **Admin Keys (`ADMIN_API_KEYS`)**: For administrators. These keys grant access to all endpoints, including protected management endpoints like resetting a Gemini key (`/admin/reset-key/{prefix}`).
 
-### 开发环境
+If `ADMIN_API_KEYS` are not set, the client keys will also have access to admin endpoints. For production environments, it is **highly recommended** to set separate admin keys.
 
-1. **克隆项目**
-   ```bash
-   git clone <repository-url>
-   cd gemini-claude
-   ```
+Authentication is handled via the `X-API-Key` header or an `Authorization: Bearer <token>` header.
 
-2. **创建虚拟环境**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # Linux/Mac
-   # 或
-   venv\Scripts\activate     # Windows
-   ```
+## 🚀 Deployment with Docker (Recommended)
 
-3. **安装依赖**
-   ```bash
-   pip install -r requirements.txt
-   ```
+Deploying with Docker is the simplest and most secure method.
 
-4. **配置环境变量**
-   ```bash
-   cp .env.example .env
-   nano .env
-   ```
-   添加你的 Gemini API 密钥：
-   ```bash
-   GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
-   ```
+### Prerequisites
 
-5. **启动开发服务器**
-   ```bash
-   python main.py
-   ```
+-   Git
+-   Docker
+-   Docker Compose
 
-服务器将在 `http://localhost:8000` 启动。
+### Step 1: Clone the Repository
 
-### 生产部署
-
-使用自动化部署脚本：
-
-#### Ubuntu/Debian 系统
 ```bash
-# 方法 1：使用 Git Clone（推荐）
-export GITHUB_REPO_URL=https://github.com/tellerlin/gemini-claude.git
-sudo bash scripts/deploy.sh
-
-# 方法 2：手动上传
-scp -r gemini-claude/ user@your-vps-ip:~/
-ssh user@your-vps-ip
+git clone https://github.com/tellerlin/gemini-claude.git
 cd gemini-claude
-sudo bash scripts/deploy.sh
 ```
 
-#### CentOS/RHEL 系统
-```bash
-# 方法 1：使用 Git Clone（推荐）
-export GITHUB_REPO_URL=https://github.com/tellerlin/gemini-claude.git
-sudo bash scripts/deploy-centos.sh
+### Step 2: Configure Environment Variables
 
-# 方法 2：手动上传
-scp -r gemini-claude/ user@your-vps-ip:~/
-ssh user@your-vps-ip
-cd gemini-claude
-sudo bash scripts/deploy-centos.sh
-```
-
-**支持的系统版本：**
-- Ubuntu 20.04, 22.04, 24.04
-- Debian 11, 12
-- CentOS Stream 8, 9
-- RHEL 8, 9
-- Rocky Linux 8, 9
-- AlmaLinux 8, 9
-
-### 📝 部署后配置
-
-部署脚本会自动创建 `.env` 文件（从 `.env.example` 复制），你需要编辑它来配置你的 API 密钥：
+Create a `.env` file by copying the example. This file will store all your secrets and configurations.
 
 ```bash
-# 编辑 .env 文件
-sudo nano /home/gemini/gemini-claude/.env
-
-# 添加你的 Gemini API 密钥
-GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
-
-# 启动服务
-gemini-manage restart
-
-# 检查服务状态
-gemini-manage status
+cp .env.example .env
 ```
 
-**⚠️ 故障排除：**
+Now, edit the `.env` file with a text editor (`nano .env` or `vim .env`) and fill in the required values.
 
-如果 `gemini-manage` 命令不可用，请尝试以下方法：
+```env
+# .env
 
-1. **重新运行部署脚本**（确保以 root 身份运行）：
-   ```bash
-   sudo bash scripts/deploy.sh          # Ubuntu/Debian
-   sudo bash scripts/deploy-centos.sh   # CentOS/RHEL
-   ```
+# --- Gemini API Keys ---
+# Add your Gemini API keys here, separated by commas.
+# Example: GEMINI_API_KEYS=AIzaSyABC...,AIzaSyDEF...
+GEMINI_API_KEYS=
 
-2. **手动检查服务状态**：
-   ```bash
-   # 检查进程是否运行
-   ps aux | grep uvicorn
-   
-   # 检查端口是否监听
-   netstat -tlnp | grep 8000
-   
-   # 检查服务健康状态
-   curl http://localhost:8000/health
-   ```
+# --- Adapter Security Keys ---
+# Required for production. These keys are used by your clients (e.g., Claude Code) to access the adapter.
+# Generate strong keys using 'openssl rand -hex 32'
+# Example: ADAPTER_API_KEYS=client-key-123,client-key-456
+ADAPTER_API_KEYS=
 
-3. **手动启动服务**（如果 Supervisor 不可用）：
-   ```bash
-   cd /home/gemini/gemini-claude
-   sudo -u gemini bash -c "source venv/bin/activate && nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > logs/app.log 2>&1 &"
-   ```
+# Optional but Recommended: Separate keys for admin access.
+# Example: ADMIN_API_KEYS=admin-key-abc,admin-key-def
+ADMIN_API_KEYS=
 
-4. **使用统一修复脚本**（推荐）：
-   ```bash
-   # 运行统一修复脚本，自动诊断和修复所有常见问题
-   ./universal-fix.sh
-   ```
+# --- Network Configuration ---
+# The host and port the service will run on inside the Docker container.
+HOST=0.0.0.0
+PORT=8000
 
-**重要配置项：**
-- `GEMINI_API_KEYS`: 你的 Gemini API 密钥，多个密钥用逗号分隔
-- `PROXY_URL`: 如果需要使用代理，取消注释并设置
-- `MAX_FAILURES`: 失败次数阈值（推荐：1-3）
-- `COOLING_PERIOD`: 冷却时间秒数（推荐：300）
-- `REQUEST_TIMEOUT`: 请求超时秒数（推荐：45）
+# --- Key Management ---
+# Number of consecutive failures before a Gemini key is put into cooling.
+MAX_FAILURES=1
+# Cooldown period in seconds for a failed Gemini key.
+COOLING_PERIOD=300
+# Request timeout in seconds.
+REQUEST_TIMEOUT=45
 
-## 📡 API 端点
-
-### 聊天完成
-```
-POST /v1/chat/completions
+# --- Proxy (Optional) ---
+# If you need to route Gemini API traffic through a proxy, uncomment and set the URL.
+# PROXY_URL=http://your-proxy-url:port
 ```
 
-请求格式（兼容 OpenAI）：
-```json
-{
-  "messages": [
-    {"role": "user", "content": "Hello, how are you?"}
-  ],
-  "model": "gemini-2.5-pro",
-  "temperature": 0.7,
-  "stream": false
-}
-```
+**Important**: Protect your `.env` file. It contains sensitive keys.
 
-### 健康检查
-```
-GET /health
-```
+### Step 3: Launch the Service
 
-### 统计信息
-```
-GET /stats
-```
+With your `.env` file configured, start the service using Docker Compose.
 
-### 可用模型
-```
-GET /v1/models
-```
-
-## 🔧 配置说明
-
-### 环境变量
-
-| 变量 | 描述 | 默认值 |
-|------|------|--------|
-| `GEMINI_API_KEYS` | Gemini API 密钥列表，用逗号分隔 | 必填 |
-| `PROXY_URL` | 代理服务器地址 | 可选 |
-| `MAX_FAILURES` | 失败次数阈值 | 1 |
-| `COOLING_PERIOD` | 冷却时间（秒） | 300 |
-| `REQUEST_TIMEOUT` | 请求超时（秒） | 45 |
-| `MAX_RETRIES` | 重试次数 | 0 |
-
-### API 密钥格式支持
-
-支持多种格式：
-```
-AIzaSyABC123...,AIzaSyDEF456...
-"AIzaSyABC123...","AIzaSyDEF456..."
-'AIzaSyABC123...','AIzaSyDEF456...'
-AIzaSyABC123..., "AIzaSyDEF456...", 'AIzaSyGHI789...'
-```
-
-## 🛠️ 管理命令
-
-### 本地开发
 ```bash
-# 启动开发服务器
-python main.py
-
-# 使用客户端测试
-python client/client.py http://localhost:8000
+docker-compose up -d
 ```
 
-### 生产环境
+The service will now be running in the background. The API will be accessible at `http://localhost:8000` (or your server's IP address).
+
+### Step 4: Manage the Service
+
+Here are the essential Docker Compose commands for managing your service:
+
+-   **Check Logs**: `docker-compose logs -f`
+-   **Stop Service**: `docker-compose down`
+-   **Restart Service**: `docker-compose restart`
+
+## 🔧 Configuring Your Client (Claude Code Example)
+
+To connect a client like Claude Code that supports the OpenAI API format, follow these steps:
+
+1.  **Open Client Settings**: Navigate to the settings panel of your code editor or client.
+2.  **Find API Configuration**: Look for "OpenAI API Settings" or a similar section.
+3.  **Set the API Endpoint**:
+    -   In the "API Base URL" or "Endpoint" field, enter the URL of your adapter:
+        `http://<your-vps-ip>:8000/v1`
+4.  **Set the API Key**:
+    -   In the "API Key" field, enter one of the **client keys** you defined in `ADAPTER_API_KEYS`.
+5.  **Save and Test**: Save the settings and try a chat completion to confirm it's working.
+
+## 📡 API Endpoints
+
+### Public Endpoints
+*No authentication required.*
+
+-   `GET /`: Returns basic service information.
+-   `GET /health`: A health check endpoint for monitoring. Returns `200 OK` if at least one Gemini key is active.
+
+### Protected Endpoints
+*Requires a **Client API Key** (`X-API-Key` or `Bearer` token).*
+
+-   `POST /v1/chat/completions`: The main endpoint for chat completions.
+-   `GET /v1/models`: Lists the available Gemini models configured in the adapter.
+-   `GET /stats`: Returns detailed statistics about key usage, failures, and status.
+
+### Admin Endpoints
+*Requires an **Admin API Key**.*
+
+-   `POST /admin/reset-key/{key_prefix}`: Manually resets a failed or cooling Gemini key back to active status. `key_prefix` must be at least 4 characters.
+-   `GET /admin/security-status`: Shows the current security configuration of the adapter.
+
+#### Example: Checking Stats with `curl`
+
 ```bash
-# 服务管理
-gemini-manage start
-gemini-manage stop
-gemini-manage restart
-gemini-manage status
-
-# 查看日志
-gemini-manage logs
-gemini-manage error-logs
-
-# 更新依赖
-gemini-manage update
-
-# 备份配置
-gemini-manage backup
+curl http://localhost:8000/stats \
+  -H "Authorization: Bearer your-client-key-123"
 ```
 
-## 🎮 客户端使用
+#### Example: Resetting a Key with `curl`
 
-### 交互式聊天
 ```bash
-python client/client.py http://your-vps-ip
+curl -X POST http://localhost:8000/admin/reset-key/AIza \
+  -H "Authorization: Bearer your-admin-key-abc"
 ```
 
-### 程序化使用
-```python
-from client.client import RemoteGeminiClient, ClientConfig
+## 🐛 Troubleshooting
 
-config = ClientConfig(
-    vps_url="http://your-vps-ip",
-    timeout=120,
-    retries=3,
-    preferred_model="gemini-2.5-pro"
-)
-
-client = RemoteGeminiClient(config)
-
-# 发送消息
-response = await client.chat_completion([
-    {"role": "user", "content": "Hello!"}
-])
-```
-
-## 🔒 安全特性
-
-- 🔐 API 密钥安全存储和传输
-- 🛡️ CORS 保护
-- 🚫 请求频率限制
-- 📝 详细的访问日志
-- 🔒 防火墙配置
-
-## 📊 监控和日志
-
-- 实时密钥状态监控
-- 详细的请求日志
-- 错误追踪和分析
-- 性能指标统计
-
-## 🐛 故障排除
-
-### 常见问题
-
-1. **API 密钥无效**
-   - 检查 `.env` 文件中的密钥格式
-   - 确保密钥有效且未过期
-
-2. **连接超时**
-   - 检查网络连接
-   - 考虑使用代理
-   - 调整 `REQUEST_TIMEOUT` 值
-
-3. **服务不可用**
-   - 检查服务器状态：`gemini-manage status`
-   - 查看错误日志：`gemini-manage error-logs`
-
-4. **`gemini-manage` 命令不可用**
-   - 确保以 root 身份运行部署脚本
-   - 检查 `/usr/local/bin/gemini-manage` 是否存在
-   - 尝试重新运行部署脚本
-
-5. **Supervisor 服务未启动**
-   - 检查 Supervisor 状态：`systemctl status supervisord`
-   - 手动启动 Supervisor：`systemctl start supervisord`
-   - 如果 Supervisor 不可用，使用手动启动方法
-
-6. **端口 8000 被占用**
-   - 检查端口占用：`netstat -tlnp | grep 8000`
-   - 终止占用进程：`kill -9 <PID>`
-   - 修改 `.env` 文件中的 `PORT` 值
-
-7. **服务启动失败或管理脚本错误**
-   - 运行统一修复脚本：`./universal-fix.sh`
-   - 该脚本会自动诊断并修复所有常见问题
-   - 检查依赖、权限、配置、服务状态和系统设置
-
-### 日志位置
-
-- 应用日志：`/home/gemini/gemini-claude/logs/app.log`
-- 错误日志：`/home/gemini/gemini-claude/logs/error.log`
-- 部署日志：`/tmp/gemini_deployment.log`
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-## 📄 许可证
-
-MIT License
-
-## 📞 支持
-
-如有问题，请查看文档或提交 Issue。
+-   **"Invalid API key"**: Ensure the key you are using in your client is listed in `ADAPTER_API_KEYS` (or `ADMIN_API_KEYS` for admin endpoints) in your `.env` file. Remember to restart the service (`docker-compose restart`) after changing the `.env` file.
+-   **"Service Unavailable" or 502/503 Errors**: This usually means all your Gemini API keys are in a "cooling" state. Check the logs (`docker-compose logs -f`) to see the errors. You can also check the `/health` endpoint for status or use the `/stats` endpoint to see the state of each key.
+-   **Connection Refused**: Verify that the Docker container is running (`docker-compose ps`). Check that you are using the correct IP address and port for your server. If running on a cloud provider, ensure the firewall rules allow traffic on port 8000.
 
 ---
 
-**[🇨🇳 中文版本](README.md)** | **[🇺🇸 Switch to English](README.en.md)**
+## 📁 Project Structure
+
+```
+gemini-claude/
+├── main.py                 # Development entry point
+├── src/
+│   └── main.py            # FastAPI application (main server)
+├── requirements.txt       # Python dependencies
+├── .env.example          # Environment configuration template
+├── docker-compose.yml    # Docker Compose configuration
+├── Dockerfile            # Docker image configuration
+├── logs/                 # Application logs
+├── README.md             # Main project documentation (English)
+├── README.zh.md          # Chinese documentation
+├── CLAUDE.md             # Project instructions for Claude Code
+└── security_guide.md     # Security configuration guide
+```
+
+---
+
+**[🇨🇳 切换到中文版本](README.zh.md)** | **[🇺🇸 English Version](README.md)**

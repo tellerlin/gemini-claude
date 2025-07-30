@@ -20,14 +20,15 @@ gemini-claude/
 ├── main.py                 # Development entry point
 ├── src/
 │   └── main.py            # FastAPI application (main server)
-├── client/
-│   └── client.py          # Remote client for VPS connections
-├── scripts/
-│   └── deploy.sh          # Production deployment script
-├── collection/            # Documentation and utilities
 ├── requirements.txt       # Python dependencies
 ├── .env.example          # Environment configuration template
-└── README.md             # Project documentation
+├── docker-compose.yml    # Docker Compose configuration
+├── Dockerfile            # Docker image configuration
+├── logs/                 # Application logs
+├── README.md             # Main project documentation (English)
+├── README.zh.md          # Chinese documentation
+├── CLAUDE.md             # Project instructions for Claude Code
+└── security_guide.md     # Security configuration guide
 ```
 
 ## Core Components
@@ -81,9 +82,6 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 ### Testing
 ```bash
-# Test with the included client
-python client/client.py http://localhost:8000
-
 # Health check
 curl http://localhost:8000/health
 
@@ -130,10 +128,12 @@ git push origin master
 ### Required Environment Variables
 ```bash
 GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...  # Required: Gemini API keys
+ADAPTER_API_KEYS=client-key-123,client-key-456   # Required: Client API keys for accessing the adapter
 ```
 
 ### Optional Environment Variables
 ```bash
+ADMIN_API_KEYS=admin-key-abc,admin-key-def       # Optional: Admin API keys for management endpoints
 PROXY_URL=http://proxy:port                        # Optional: Proxy server
 MAX_FAILURES=1                                    # Optional: Failures before cooling (default: 1)
 COOLING_PERIOD=300                                # Optional: Cooling duration in seconds (default: 300)
@@ -144,6 +144,13 @@ PORT=8000                                        # Optional: Server port (defaul
 HOST=0.0.0.0                                     # Optional: Server host (default: 0.0.0.0)
 ```
 
+### Security Authentication
+The adapter enforces API key authentication with two levels:
+- **Client Keys**: Access to chat completions and model listing
+- **Admin Keys**: Access to all endpoints including management functions
+
+Generate strong keys using: `openssl rand -hex 32`
+
 ### API Key Format Support
 - Comma-separated: `AIzaSyABC123...,AIzaSyDEF456...`
 - Quoted strings: `"AIzaSyABC123...","AIzaSyDEF456..."`
@@ -151,19 +158,24 @@ HOST=0.0.0.0                                     # Optional: Server host (defaul
 
 ## API Endpoints
 
-### Primary Endpoints
+### Public Endpoints (No authentication required)
+- `GET /` - Basic service information
+- `GET /health` - Health check
+
+### Protected Endpoints (Requires Client API Key)
 - `POST /v1/chat/completions` - Chat completion (OpenAI compatible)
 - `GET /v1/models` - List available models
-- `GET /health` - Health check
 - `GET /stats` - Server statistics and key status
 
-### Admin Endpoints
+### Admin Endpoints (Requires Admin API Key)
 - `POST /admin/reset-key/{key_prefix}` - Reset a specific key's status
+- `GET /admin/security-status` - Security configuration status
 
 ### Documentation
 - `GET /docs` - Interactive API documentation (Swagger UI)
 - `GET /redoc` - Alternative API documentation
-- `GET /` - Basic service information
+
+Authentication is handled via `X-API-Key` header or `Authorization: Bearer <token>` header.
 
 ## Testing Guidelines
 
@@ -189,26 +201,23 @@ HOST=0.0.0.0                                     # Optional: Server host (defaul
 
 ### Production Deployment
 ```bash
-# Use the provided deployment script
-sudo bash scripts/deploy.sh
+# Use Docker Compose for production deployment
+docker-compose up -d
 
 # Manual deployment steps:
 # 1. Copy project to server
-# 2. Set up virtual environment
-# 3. Install dependencies
-# 4. Configure environment variables
-# 5. Set up systemd service (or use docker)
+# 2. Configure environment variables
+# 3. Use docker-compose to start the service
 ```
 
 ### Service Management
 ```bash
-# The deployment script sets up these commands:
-gemini-manage start      # Start the service
-gemini-manage stop       # Stop the service
-gemini-manage restart    # Restart the service
-gemini-manage status     # Check service status
-gemini-manage logs       # View application logs
-gemini-manage error-logs # View error logs only
+# Docker Compose commands
+docker-compose up -d        # Start the service
+docker-compose down         # Stop the service
+docker-compose restart      # Restart the service
+docker-compose logs -f      # View logs
+docker-compose ps           # Check status
 ```
 
 ## Security Considerations
@@ -228,7 +237,8 @@ gemini-manage error-logs # View error logs only
 ### CORS Configuration
 - **Restrict origins** in production (currently open for development)
 - **Validate request headers** for API calls
-- **Implement proper authentication** for production use
+- **API key authentication** is enforced for all protected endpoints
+- **Use separate admin keys** for production environments
 
 ## Performance Optimization
 

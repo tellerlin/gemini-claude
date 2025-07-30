@@ -1,13 +1,14 @@
 import asyncio
 import time
 import random
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any, Union, Set
 from dataclasses import dataclass, field
 from enum import Enum
 import json
 import httpx
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
+from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, validator
 from loguru import logger
 import litellm
@@ -15,6 +16,7 @@ from contextlib import asynccontextmanager
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 
 # Load environment variables from .env file
 load_dotenv()
@@ -84,6 +86,106 @@ class ChatRequest(BaseModel):
             if not isinstance(msg, dict) or 'role' not in msg or 'content' not in msg:
                 raise ValueError("Each message must have 'role' and 'content' fields")
         return v
+
+# Security Configuration
+class SecurityConfig:
+    def __init__(self):
+        # Load adapter API keys from environment
+        adapter_keys_str = os.getenv("ADAPTER_API_KEYS", "")
+        self.valid_api_keys: Set[str] = set(
+            key.strip() for key in adapter_keys_str.split(',') 
+            if key.strip()
+        )
+        self.security_enabled = bool(self.valid_api_keys)
+        
+        # Admin keys for management endpoints
+        admin_keys_str = os.getenv("ADMIN_API_KEYS", "")
+        self.admin_keys: Set[str] = set(
+            key.strip() for key in admin_keys_str.split(',')
+            if key.strip()
+        )
+        
+        if self.security_enabled:
+            logger.info(f"Security enabled with {len(self.valid_api_keys)} client keys")
+        else:
+            logger.warning("Security disabled - no ADAPTER_API_KEYS configured")
+            
+        if self.admin_keys:
+            logger.info(f"Admin access enabled with {len(self.admin_keys)} admin keys")
+
+# Initialize security config
+security_config = SecurityConfig()
+
+# Authentication schemes
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+bearer_scheme = HTTPBearer(auto_error=False)
+
+async def verify_api_key(
+    api_key: Optional[str] = Depends(api_key_header),
+    bearer_token: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)
+) -> str:
+    """
+    Verify API key from either X-API-Key header or Bearer token
+    Returns the validated key or raises HTTPException
+    """
+    if not security_config.security_enabled:
+        logger.debug("Security disabled, allowing access")
+        return "insecure_mode"
+    
+    # Try X-API-Key header first
+    if api_key and api_key in security_config.valid_api_keys:
+        return api_key
+    
+    # Try Bearer token
+    if bearer_token and bearer_token.credentials in security_config.valid_api_keys:
+        return bearer_token.credentials
+    
+    # Check if any key was provided
+    if not api_key and not bearer_token:
+        raise HTTPException(
+            status_code=HTTP_401_UNAUTHORIZED,
+            detail="API key required. Use X-API-Key header or Authorization: Bearer <key>",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    # Invalid key provided
+    raise HTTPException(
+        status_code=HTTP_403_FORBIDDEN,
+        detail="Invalid API key"
+    )
+
+async def verify_admin_key(
+    api_key: Optional[str] = Depends(api_key_header),
+    bearer_token: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)
+) -> str:
+    """
+    Verify admin API key for management endpoints
+    """
+    if not security_config.admin_keys:
+        # If no admin keys configured, fall back to regular API key verification
+        return await verify_api_key(api_key, bearer_token)
+    
+    # Try X-API-Key header first
+    if api_key and api_key in security_config.admin_keys:
+        return api_key
+    
+    # Try Bearer token
+    if bearer_token and bearer_token.credentials in security_config.admin_keys:
+        return bearer_token.credentials
+    
+    # Check if any key was provided
+    if not api_key and not bearer_token:
+        raise HTTPException(
+            status_code=HTTP_401_UNAUTHORIZED,
+            detail="Admin API key required",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    # Invalid admin key
+    raise HTTPException(
+        status_code=HTTP_403_FORBIDDEN,
+        detail="Invalid admin API key"
+    )
 
 class GeminiKeyManager:
     def __init__(self, config: GeminiConfig):
@@ -314,6 +416,12 @@ async def lifespan(app: FastAPI):
         adapter = LiteLLMAdapter(config, key_manager)
         logger.info("Gemini Claude Adapter started successfully.")
         
+        # Log security status
+        if security_config.security_enabled:
+            logger.info("API key authentication is ENABLED")
+        else:
+            logger.warning("API key authentication is DISABLED - service is unsecured!")
+        
         yield
         
     except Exception as e:
@@ -325,7 +433,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Gemini Claude Code Adapter",
     description="An adapter for Claude Code to use Gemini API with key rotation and fault tolerance.",
-    version="1.2.1",
+    version="1.3.0",
     lifespan=lifespan
 )
 
@@ -353,12 +461,58 @@ async def stream_generator(response_stream):
         error_payload = {"error": {"message": str(e), "type": "stream_error"}}
         yield f"data: {json.dumps(error_payload)}\n\n"
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: ChatRequest):
+# Public endpoints (no authentication required)
+@app.get("/", include_in_schema=False)
+async def root():
+    """Root endpoint with basic info - no authentication required"""
+    return {
+        "name": "Gemini Claude Adapter",
+        "version": "1.3.0",
+        "status": "running",
+        "security_enabled": security_config.security_enabled,
+        "endpoints": {
+            "chat": "/v1/chat/completions",
+            "models": "/v1/models",
+            "health": "/health",
+            "stats": "/stats",
+            "admin": "/admin/reset-key/{key_prefix}"
+        },
+        "authentication": {
+            "required": security_config.security_enabled,
+            "methods": ["X-API-Key header", "Authorization Bearer token"] if security_config.security_enabled else []
+        },
+        "docs": "/docs"
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint - no authentication required for monitoring"""
+    if not key_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        stats = await key_manager.get_stats()
+        status_code = 200 if stats["active_keys"] > 0 else 503
+        
+        return {
+            "status": "healthy" if stats["active_keys"] > 0 else "degraded",
+            "timestamp": datetime.now().isoformat(),
+            "service_version": "1.3.0",
+            "security_enabled": security_config.security_enabled,
+            **stats
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        raise HTTPException(status_code=500, detail="Health check failed")
+
+# Protected endpoints (require authentication)
+@app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
+async def chat_completions(request: ChatRequest, client_key: str = Depends(verify_api_key)):
     if not adapter:
         raise HTTPException(status_code=503, detail="Service not initialized")
     
     try:
+        logger.info(f"Chat completion request from client: {client_key[:8] if client_key != 'insecure_mode' else 'insecure_mode'}...")
         response = await adapter.chat_completion(request)
         if request.stream:
             return StreamingResponse(
@@ -369,7 +523,7 @@ async def chat_completions(request: ChatRequest):
                     "Connection": "keep-alive",
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
                 }
             )
         else:
@@ -382,32 +536,13 @@ async def chat_completions(request: ChatRequest):
 
 @app.options("/v1/chat/completions")
 async def options_chat_completions():
-    """Handle OPTIONS requests for CORS preflight"""
+    """Handle OPTIONS requests for CORS preflight - no authentication required"""
     return {
         "status": "ok"
     }
 
-@app.get("/health")
-async def health_check():
-    if not key_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        stats = await key_manager.get_stats()
-        status_code = 200 if stats["active_keys"] > 0 else 503
-        
-        return {
-            "status": "healthy" if stats["active_keys"] > 0 else "degraded",
-            "timestamp": datetime.now().isoformat(),
-            "service_version": "1.2.1",
-            **stats
-        }, status_code
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        raise HTTPException(status_code=500, detail="Health check failed")
-
-@app.get("/stats")
-async def get_stats():
+@app.get("/stats", dependencies=[Depends(verify_api_key)])
+async def get_stats(client_key: str = Depends(verify_api_key)):
     if not key_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
     
@@ -417,8 +552,8 @@ async def get_stats():
         logger.error(f"Stats retrieval failed: {e}")
         raise HTTPException(status_code=500, detail="Stats retrieval failed")
 
-@app.get("/v1/models")
-async def get_models():
+@app.get("/v1/models", dependencies=[Depends(verify_api_key)])
+async def get_models(client_key: str = Depends(verify_api_key)):
     """Get available models"""
     return {
         "object": "list",
@@ -428,17 +563,31 @@ async def get_models():
                 "object": "model",
                 "created": int(time.time()),
                 "owned_by": "google"
+            },
+            {
+                "id": "gemini-1.5-pro-latest",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "google"
+            },
+            {
+                "id": "gemini-1.5-flash-latest",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "google"
             }
         ]
     }
 
-@app.post("/admin/reset-key/{key_prefix}")
-async def reset_key(key_prefix: str):
-    """Reset a key's status by prefix"""
+# Admin endpoints (require admin authentication)
+@app.post("/admin/reset-key/{key_prefix}", dependencies=[Depends(verify_admin_key)])
+async def reset_key(key_prefix: str, admin_key: str = Depends(verify_admin_key)):
+    """Reset a key's status by prefix - requires admin authentication"""
     if not key_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
     
     try:
+        logger.info(f"Admin key reset requested by: {admin_key[:8] if admin_key != 'insecure_mode' else 'insecure_mode'}...")
         result = await key_manager.reset_key(key_prefix)
         if "error" in result:
             raise HTTPException(status_code=404, detail=result["error"])
@@ -449,21 +598,16 @@ async def reset_key(key_prefix: str):
         logger.error(f"Key reset failed: {e}")
         raise HTTPException(status_code=500, detail="Key reset failed")
 
-@app.get("/")
-async def root():
-    """Root endpoint with basic info"""
+@app.get("/admin/security-status", dependencies=[Depends(verify_admin_key)])
+async def get_security_status(admin_key: str = Depends(verify_admin_key)):
+    """Get security configuration status - admin only"""
     return {
-        "name": "Gemini Claude Adapter",
-        "version": "1.2.1",
-        "status": "running",
-        "endpoints": {
-            "chat": "/v1/chat/completions",
-            "models": "/v1/models",
-            "health": "/health",
-            "stats": "/stats",
-            "admin": "/admin/reset-key/{key_prefix}"
-        },
-        "docs": "/docs"
+        "security_enabled": security_config.security_enabled,
+        "client_keys_count": len(security_config.valid_api_keys),
+        "admin_keys_count": len(security_config.admin_keys),
+        "has_admin_keys": bool(security_config.admin_keys),
+        "authentication_methods": ["X-API-Key header", "Authorization Bearer token"],
+        "admin_endpoints": ["/admin/reset-key/{key_prefix}", "/admin/security-status"]
     }
 
 if __name__ == "__main__":
