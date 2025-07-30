@@ -143,10 +143,10 @@ gemini-manage status
    sudo -u gemini bash -c "source venv/bin/activate && nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > logs/app.log 2>&1 &"
    ```
 
-4. **使用快速修复脚本**（推荐）：
+4. **使用统一修复脚本**（推荐）：
    ```bash
-   # 运行快速修复脚本，自动诊断和修复问题
-   ./quick-fix.sh
+   # 运行统一修复脚本，自动诊断和修复所有常见问题
+   ./universal-fix.sh
    ```
 
 **重要配置项：**
@@ -317,9 +317,9 @@ response = await client.chat_completion([
    - 修改 `.env` 文件中的 `PORT` 值
 
 7. **服务启动失败或管理脚本错误**
-   - 运行快速修复脚本：`./quick-fix.sh`
-   - 该脚本会自动诊断并修复常见问题
-   - 检查依赖、权限、配置和服务状态
+   - 运行统一修复脚本：`./universal-fix.sh`
+   - 该脚本会自动诊断并修复所有常见问题
+   - 检查依赖、权限、配置、服务状态和系统设置
 
 ### 日志位置
 

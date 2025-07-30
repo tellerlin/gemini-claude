@@ -17,7 +17,8 @@
       "Bash(supervisorctl status:*)",
       "Bash(rm:*)",
       "Bash(./test-deployment.sh:*)",
-      "Bash(./test-readme.sh:*)"
+      "Bash(./test-readme.sh:*)",
+      "Bash(./universal-fix.sh:*)"
     ],
     "deny": []
   }

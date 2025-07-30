@@ -143,10 +143,10 @@ If the `gemini-manage` command is not available, please try the following method
    sudo -u gemini bash -c "source venv/bin/activate && nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > logs/app.log 2>&1 &"
    ```
 
-4. **Use the quick fix script** (recommended):
+4. **Use the universal fix script** (recommended):
    ```bash
-   # Run the quick fix script to automatically diagnose and fix issues
-   ./quick-fix.sh
+   # Run the universal fix script to automatically diagnose and fix all common issues
+   ./universal-fix.sh
    ```
 
 **Important Configuration Options:**
@@ -317,9 +317,9 @@ response = await client.chat_completion([
    - Modify `PORT` value in `.env` file
 
 7. **Service startup failed or management script errors**
-   - Run quick fix script: `./quick-fix.sh`
-   - This script will automatically diagnose and fix common issues
-   - Check dependencies, permissions, configuration, and service status
+   - Run universal fix script: `./universal-fix.sh`
+   - This script will automatically diagnose and fix all common issues
+   - Check dependencies, permissions, configuration, service status, and system settings
 
 ### Log Locations
 
