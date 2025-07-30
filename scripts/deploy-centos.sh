@@ -302,7 +302,8 @@ configure_supervisor() {
     
     cat > "$supervisor_conf" << EOF
 [program:gemini-adapter]
-command=$working_dir/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 1
+# MODIFIED: Use python -m uvicorn for a more robust startup
+command=$working_dir/venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 1
 directory=$working_dir
 user=$APP_USER
 autostart=true
@@ -349,7 +350,8 @@ configure_nginx() {
     
     cat > "$nginx_conf" << 'EOF'
 # Rate limiting configuration
-limit_req_zone $binary_remote_addr zone=api:10m rate=30r/s;
+# MODIFIED: Use a unique zone name to avoid conflicts
+limit_req_zone $binary_remote_addr zone=gemini_api:10m rate=30r/s;
 
 server {
     listen 80;
@@ -363,7 +365,8 @@ server {
     add_header Referrer-Policy "no-referrer-when-downgrade" always;
 
     # Rate limiting
-    limit_req zone=api burst=60 nodelay;
+    # MODIFIED: Use the unique zone name
+    limit_req zone=gemini_api burst=60 nodelay;
 
     client_max_body_size 10M;
     client_body_timeout 60s;
