@@ -4,8 +4,15 @@
 set -euo pipefail # Exit on error, undefined variables, and pipe failures
 
 # --- Configuration ---
-readonly APP_USER="gemini"
-readonly APP_DIR="/home/$APP_USER/gemini-claude"
+# 自动检测调用sudo的用户名，如果直接用root用户执行，则默认为'root'
+readonly APP_USER="${SUDO_USER:-root}"
+
+# 自动获取该用户的主目录路径 (这种方法对root用户和普通用户都有效)
+readonly APP_HOME=$(eval echo ~$APP_USER)
+
+# 根据用户主目录动态定义应用路径
+readonly APP_DIR="$APP_HOME/github/gemini-claude"
+
 readonly CURRENT_DIR="$(pwd)"
 readonly LOG_FILE="/tmp/gemini_deployment.log"
 
