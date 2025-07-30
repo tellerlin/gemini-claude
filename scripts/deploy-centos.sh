@@ -46,12 +46,16 @@ check_system() {
         log_error "This script currently only supports CentOS/RHEL-based systems."
     fi
     
-    # Check if we have required files
-    if [[ ! -f "src/main.py" || ! -f "requirements.txt" ]]; then
-        log_error "Required files (src/main.py, requirements.txt) not found. Please run this script from the project directory or clone the project first."
+    # MODIFIED: Only check for required files if NOT using git clone method
+    if [[ -z "${GITHUB_REPO_URL:-}" ]]; then
+        log_info "GITHUB_REPO_URL not set. Checking for local project files..."
+        if [[ ! -f "src/main.py" || ! -f "requirements.txt" ]]; then
+            log_error "Required files (src/main.py, requirements.txt) not found. Please run this script from the project directory or set GITHUB_REPO_URL to clone the project."
+        fi
+        log_success "Found project files in: $CURRENT_DIR"
+    else
+        log_info "GITHUB_REPO_URL is set. Skipping local file check, will clone repository later."
     fi
-    
-    log_success "Found project files in: $CURRENT_DIR"
 }
 
 # --- Installation Functions ---
