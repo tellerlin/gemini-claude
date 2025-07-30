@@ -310,8 +310,17 @@ configure_supervisor() {
     log_info "Configuring Supervisor..."
     
     # Enable and start supervisor
-    systemctl enable supervisord || log_error "Failed to enable supervisor"
-    systemctl start supervisord || log_error "Failed to start supervisor"
+    systemctl enable supervisord || log_warning "Failed to enable supervisor"
+    systemctl start supervisord || log_warning "Failed to start supervisor"
+    
+    # Wait for supervisor to start
+    sleep 5
+    
+    # Check if supervisor is running
+    if ! systemctl is-active --quiet supervisord; then
+        log_warning "Supervisor failed to start, will use manual management"
+        return 0
+    fi
     
     local supervisor_conf="/etc/supervisord.d/gemini-adapter.conf"
     
@@ -336,11 +345,19 @@ killasgroup=true
 priority=999
 EOF
 
-    # Test supervisor configuration
-    supervisorctl reread || log_error "Failed to read supervisor configuration"
-    supervisorctl update || log_error "Failed to update supervisor"
+    # Wait a moment for supervisor to detect the new config
+    sleep 2
     
-    log_success "Supervisor configured successfully."
+    # Test supervisor configuration
+    if command -v supervisorctl &> /dev/null; then
+        if supervisorctl reread && supervisorctl update; then
+            log_success "Supervisor configured successfully."
+        else
+            log_warning "Supervisor configuration failed, will use manual management"
+        fi
+    else
+        log_warning "supervisorctl not available, will use manual management"
+    fi
 }
 
 configure_nginx() {

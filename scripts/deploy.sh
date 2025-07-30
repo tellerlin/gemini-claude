@@ -228,16 +228,19 @@ killasgroup=true
 priority=999
 EOF
 
+    # Wait a moment for supervisor to detect the new config
+    sleep 2
+    
     # Test supervisor configuration
-    if ! supervisorctl reread 2>/dev/null; then
-        log_error "Failed to read supervisor configuration"
+    if command -v supervisorctl &> /dev/null; then
+        if supervisorctl reread && supervisorctl update; then
+            log_success "Supervisor configured successfully."
+        else
+            log_warning "Supervisor configuration failed, will use manual management"
+        fi
+    else
+        log_warning "supervisorctl not available, will use manual management"
     fi
-    
-    if ! supervisorctl update 2>/dev/null; then
-        log_error "Failed to update supervisor"
-    fi
-    
-    log_success "Supervisor configured successfully."
 }
 
 configure_nginx() {
