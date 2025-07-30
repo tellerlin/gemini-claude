@@ -115,6 +115,34 @@ gemini-manage restart
 gemini-manage status
 ```
 
+**⚠️ 故障排除：**
+
+如果 `gemini-manage` 命令不可用，请尝试以下方法：
+
+1. **重新运行部署脚本**（确保以 root 身份运行）：
+   ```bash
+   sudo bash scripts/deploy.sh          # Ubuntu/Debian
+   sudo bash scripts/deploy-centos.sh   # CentOS/RHEL
+   ```
+
+2. **手动检查服务状态**：
+   ```bash
+   # 检查进程是否运行
+   ps aux | grep uvicorn
+   
+   # 检查端口是否监听
+   netstat -tlnp | grep 8000
+   
+   # 检查服务健康状态
+   curl http://localhost:8000/health
+   ```
+
+3. **手动启动服务**（如果 Supervisor 不可用）：
+   ```bash
+   cd /home/gemini/gemini-claude
+   sudo -u gemini bash -c "source venv/bin/activate && nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > logs/app.log 2>&1 &"
+   ```
+
 **重要配置项：**
 - `GEMINI_API_KEYS`: 你的 Gemini API 密钥，多个密钥用逗号分隔
 - `PROXY_URL`: 如果需要使用代理，取消注释并设置
@@ -266,6 +294,21 @@ response = await client.chat_completion([
 3. **服务不可用**
    - 检查服务器状态：`gemini-manage status`
    - 查看错误日志：`gemini-manage error-logs`
+
+4. **`gemini-manage` 命令不可用**
+   - 确保以 root 身份运行部署脚本
+   - 检查 `/usr/local/bin/gemini-manage` 是否存在
+   - 尝试重新运行部署脚本
+
+5. **Supervisor 服务未启动**
+   - 检查 Supervisor 状态：`systemctl status supervisord`
+   - 手动启动 Supervisor：`systemctl start supervisord`
+   - 如果 Supervisor 不可用，使用手动启动方法
+
+6. **端口 8000 被占用**
+   - 检查端口占用：`netstat -tlnp | grep 8000`
+   - 终止占用进程：`kill -9 <PID>`
+   - 修改 `.env` 文件中的 `PORT` 值
 
 ### 日志位置
 

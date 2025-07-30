@@ -115,6 +115,34 @@ gemini-manage restart
 gemini-manage status
 ```
 
+**⚠️ Troubleshooting:**
+
+If the `gemini-manage` command is not available, please try the following methods:
+
+1. **Re-run the deployment script** (make sure to run as root):
+   ```bash
+   sudo bash scripts/deploy.sh          # Ubuntu/Debian
+   sudo bash scripts/deploy-centos.sh   # CentOS/RHEL
+   ```
+
+2. **Manually check service status**:
+   ```bash
+   # Check if the process is running
+   ps aux | grep uvicorn
+   
+   # Check if the port is listening
+   netstat -tlnp | grep 8000
+   
+   # Check service health status
+   curl http://localhost:8000/health
+   ```
+
+3. **Manually start the service** (if Supervisor is not available):
+   ```bash
+   cd /home/gemini/gemini-claude
+   sudo -u gemini bash -c "source venv/bin/activate && nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > logs/app.log 2>&1 &"
+   ```
+
 **Important Configuration Options:**
 - `GEMINI_API_KEYS`: Your Gemini API keys, separated by commas
 - `PROXY_URL`: Uncomment and set if you need to use a proxy
@@ -266,6 +294,21 @@ response = await client.chat_completion([
 3. **Service Unavailable**
    - Check service status: `gemini-manage status`
    - View error logs: `gemini-manage error-logs`
+
+4. **`gemini-manage` command not available**
+   - Ensure deployment script was run as root
+   - Check if `/usr/local/bin/gemini-manage` exists
+   - Try re-running the deployment script
+
+5. **Supervisor service not started**
+   - Check Supervisor status: `systemctl status supervisord`
+   - Manually start Supervisor: `systemctl start supervisord`
+   - Use manual startup method if Supervisor is not available
+
+6. **Port 8000 is occupied**
+   - Check port usage: `netstat -tlnp | grep 8000`
+   - Kill occupying process: `kill -9 <PID>`
+   - Modify `PORT` value in `.env` file
 
 ### Log Locations
 
