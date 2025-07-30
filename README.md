@@ -9,7 +9,7 @@ A high-performance, secure Gemini adapter designed for clients like Claude Code,
 -   🚀 **Ultra-fast Response**: Optimized request handling and smart key rotation.
 -   🔑 **Smart Key Management**: Failed Gemini keys are immediately placed in a cool-down period, with automatic failover to the next available key.
 -   🛡️ **Robust Security**: Enforced API key authentication for all sensitive endpoints using client and admin keys.
--   🌐 **Full Compatibility**: Compatible with clients that use the OpenAI API format, including Claude Code.
+-   🌐 **Full Compatibility**: Compatible with Claude Code (Anthropic API format) and clients that use the OpenAI API format.
 -   ⚡ **Streaming Support**: Native support for streaming chat responses.
 -   📊 **Real-time Monitoring**: Endpoints for service health, key status, and usage statistics.
 -   🐳 **Simplified Docker Deployment**: Quick and secure setup using Docker and Docker Compose.
@@ -108,12 +108,117 @@ Here are the essential Docker Compose commands for managing your service:
 -   **Stop Service**: `docker-compose down`
 -   **Restart Service**: `docker-compose restart`
 
+## 🔄 Updating the Project
+
+When new updates are released for the Gemini Claude Adapter, follow these steps to update your deployment:
+
+### Method 1: Git Pull (Recommended)
+
+This method preserves your custom configurations while updating the application code:
+
+```bash
+# Navigate to your project directory
+cd gemini-claude
+
+# Stop the running service
+docker-compose down
+
+# Pull the latest changes
+git pull origin main
+
+# Rebuild and restart the service
+docker-compose up -d --build
+
+# Check the service status
+docker-compose ps
+docker-compose logs -f
+```
+
+### Method 2: Manual Update
+
+If you have made custom modifications to the code:
+
+```bash
+# Stop the service
+docker-compose down
+
+# Backup your .env file (important!)
+cp .env .env.backup
+
+# Remove the old project directory (optional)
+rm -rf gemini-claude
+
+# Clone the latest version
+git clone https://github.com/tellerlin/gemini-claude.git
+cd gemini-claude
+
+# Restore your configuration
+cp ../.env.backup .env
+
+# Start the service
+docker-compose up -d
+```
+
+### Important Notes
+
+- **Configuration Preservation**: Your `.env` file contains your API keys and settings. Always back it up before updating.
+- **Database/Logs**: The `logs/` directory is mounted as a volume, so your logs will be preserved.
+- **Docker Images**: The `--build` flag ensures Docker uses the latest code to rebuild the image.
+- **Breaking Changes**: Check the project's release notes or commit history for any breaking changes that might require configuration updates.
+
+### What Gets Updated
+
+- Application code and features
+- Security patches and improvements
+- Docker configuration
+- Dependencies and requirements
+
+### What Gets Preserved
+
+- Your `.env` configuration file
+- Application logs in `logs/` directory
+- Docker volumes and data
+- Your custom settings
+
+## ⚙️ Complete Configuration Reference
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GEMINI_API_KEYS` | Yes | - | Comma-separated Google Gemini API keys |
+| `ADAPTER_API_KEYS` | Yes | - | Client authentication keys (generate with `openssl rand -hex 32`) |
+| `ADMIN_API_KEYS` | No | - | Admin authentication keys (recommended for production) |
+| `HOST` | No | `0.0.0.0` | Host to bind to inside container |
+| `PORT` | No | `8000` | Port to bind to inside container |
+| `MAX_FAILURES` | No | `1` | Consecutive failures before key cooling |
+| `COOLING_PERIOD` | No | `300` | Seconds to keep failed key in cooling |
+| `REQUEST_TIMEOUT` | No | `45` | Timeout for Gemini API requests in seconds |
+| `MAX_RETRIES` | No | `0` | Number of retry attempts for failed requests |
+| `PROXY_URL` | No | - | HTTP proxy URL for Gemini API calls |
+
+### API Key Format Examples
+
+```bash
+# Multiple Gemini keys
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
+
+# Multiple client keys
+ADAPTER_API_KEYS=client-key-123,client-key-456,client-key-abc
+
+# Admin keys (separate from client keys)
+ADMIN_API_KEYS=admin-key-secure-1,admin-key-secure-2
+
+# With proxy
+PROXY_URL=http://proxy.example.com:8080
+```
+
 ## 🔧 Configuring Your Client (Claude Code Example)
 
-To connect a client like Claude Code that supports the OpenAI API format, follow these steps:
+To connect Claude Code which uses the Anthropic API format, follow these steps:
 
 1.  **Open Client Settings**: Navigate to the settings panel of your code editor or client.
-2.  **Find API Configuration**: Look for "OpenAI API Settings" or a similar section.
+2.  **Find API Configuration**: Look for "Anthropic API Settings" or "Claude API Settings" section.
 3.  **Set the API Endpoint**:
     -   In the "API Base URL" or "Endpoint" field, enter the URL of your adapter:
         `http://<your-vps-ip>:8000/v1`

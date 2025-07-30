@@ -9,7 +9,7 @@
 -   🚀 **极速响应** - 优化的请求处理和密钥轮换算法
 -   🔑 **智能密钥管理** - 失败密钥立即冷却，自动切换到下一个可用密钥
 -   🛡️ **强大安全性** - 强制 API 密钥认证，支持客户端和管理员密钥
--   🌐 **完全兼容** - 兼容 Claude Code 和 OpenAI API 格式
+-   🌐 **完全兼容** - 兼容 Claude Code (Anthropic API 格式) 和 OpenAI API 格式
 -   ⚡ **流式支持** - 原生支持流式聊天响应
 -   📊 **实时监控** - 详细的服务状态和密钥使用统计
 -   🐳 **简化 Docker 部署** - 使用 Docker 和 Docker Compose 快速安全部署
@@ -108,12 +108,117 @@ docker-compose up -d
 -   **停止服务**：`docker-compose down`
 -   **重启服务**：`docker-compose restart`
 
+## 🔄 更新项目
+
+当 Gemini Claude Adapter 发布新更新时，请按照以下步骤更新您的部署：
+
+### 方法 1：Git Pull（推荐）
+
+此方法保留您的自定义配置，同时更新应用程序代码：
+
+```bash
+# 导航到您的项目目录
+cd gemini-claude
+
+# 停止运行的服务
+docker-compose down
+
+# 拉取最新更改
+git pull origin main
+
+# 重新构建并重启服务
+docker-compose up -d --build
+
+# 检查服务状态
+docker-compose ps
+docker-compose logs -f
+```
+
+### 方法 2：手动更新
+
+如果您对代码进行了自定义修改：
+
+```bash
+# 停止服务
+docker-compose down
+
+# 备份您的 .env 文件（重要！）
+cp .env .env.backup
+
+# 删除旧的项目目录（可选）
+rm -rf gemini-claude
+
+# 克隆最新版本
+git clone https://github.com/tellerlin/gemini-claude.git
+cd gemini-claude
+
+# 恢复您的配置
+cp ../.env.backup .env
+
+# 启动服务
+docker-compose up -d
+```
+
+### 重要说明
+
+- **配置保留**：您的 `.env` 文件包含您的 API 密钥和设置。更新前请务必备份。
+- **数据库/日志**：`logs/` 目录被挂载为卷，因此您的日志将被保留。
+- **Docker 镜像**：`--build` 标志确保 Docker 使用最新代码重新构建镜像。
+- **破坏性更改**：检查项目的发布说明或提交历史记录，了解可能需要配置更新的破坏性更改。
+
+### 什么会被更新
+
+- 应用程序代码和功能
+- 安全补丁和改进
+- Docker 配置
+- 依赖项和要求
+
+### 什么会被保留
+
+- 您的 `.env` 配置文件
+- `logs/` 目录中的应用程序日志
+- Docker 卷和数据
+- 您的自定义设置
+
+## ⚙️ 完整配置参考
+
+### 环境变量
+
+| 变量 | 必需 | 默认值 | 描述 |
+|------|------|--------|------|
+| `GEMINI_API_KEYS` | 是 | - | 逗号分隔的 Google Gemini API 密钥 |
+| `ADAPTER_API_KEYS` | 是 | - | 客户端认证密钥（使用 `openssl rand -hex 32` 生成） |
+| `ADMIN_API_KEYS` | 否 | - | 管理员认证密钥（生产环境推荐） |
+| `HOST` | 否 | `0.0.0.0` | 容器内绑定的主机 |
+| `PORT` | 否 | `8000` | 容器内绑定的端口 |
+| `MAX_FAILURES` | 否 | `1` | 密钥冷却前的连续失败次数 |
+| `COOLING_PERIOD` | 否 | `300` | 失败密钥冷却的秒数 |
+| `REQUEST_TIMEOUT` | 否 | `45` | Gemini API 请求超时秒数 |
+| `MAX_RETRIES` | 否 | `0` | 失败请求的重试次数 |
+| `PROXY_URL` | 否 | - | Gemini API 调用的 HTTP 代理 URL |
+
+### API 密钥格式示例
+
+```bash
+# 多个 Gemini 密钥
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
+
+# 多个客户端密钥
+ADAPTER_API_KEYS=client-key-123,client-key-456,client-key-abc
+
+# 管理员密钥（与客户端密钥分离）
+ADMIN_API_KEYS=admin-key-secure-1,admin-key-secure-2
+
+# 使用代理
+PROXY_URL=http://proxy.example.com:8080
+```
+
 ## 🔧 配置您的客户端（Claude Code 示例）
 
-要连接支持 OpenAI API 格式的客户端（如 Claude Code），请按照以下步骤操作：
+要连接支持 Anthropic API 格式的 Claude Code 客户端，请按照以下步骤操作：
 
 1.  **打开客户端设置**：导航到您的代码编辑器或客户端的设置面板。
-2.  **查找 API 配置**：查找"OpenAI API 设置"或类似部分。
+2.  **查找 API 配置**：查找"Anthropic API 设置"或"Claude API 设置"部分。
 3.  **设置 API 端点**：
     -   在"API Base URL"或"Endpoint"字段中，输入您的适配器 URL：
         `http://<your-vps-ip>:8000/v1`
