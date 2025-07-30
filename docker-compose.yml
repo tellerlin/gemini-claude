@@ -1,0 +1,20 @@
+# docker-compose.yml
+
+version: '3.8'
+
+services:
+  gemini-claude-adapter:
+    # build: . 表示使用当前目录下的 Dockerfile 来构建镜像
+    build: .
+    # 给容器起一个固定的名字，方便管理
+    container_name: gemini-claude-adapter
+    # restart: always 确保容器在退出或服务器重启后能自动重启，替代了 Supervisor 的功能
+    restart: always
+    ports:
+      # 将宿主机的 80 端口映射到容器的 8000 端口
+      # 这样您就可以直接通过 http://服务器IP 访问服务了
+      - "80:8000"
+    # env_file 是关键！它会将宿主机上的 .env 文件中的所有变量加载到容器中
+    # 这让您可以安全地在服务器上管理API密钥，而无需将其构建到镜像里
+    env_file:
+      - ./.env
