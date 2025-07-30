@@ -122,12 +122,21 @@ setup_app_environment() {
         # Copy application files (fallback method)
         log_info "Copying application files..."
         # Check if we're running from the target directory
-        if [[ "$(dirname "$SCRIPT_DIR")" == "$APP_DIR" ]]; then
+        if [[ "$(pwd)" == "$APP_DIR" ]]; then
             log_info "Already in target directory, skipping file copy"
+            log_success "Application files are already in place."
         else
             # SCRIPT_DIR is project-root/scripts, we need to copy from parent directory
-            cp -r "$(dirname "$SCRIPT_DIR")"/* "$APP_DIR/" || log_error "Failed to copy application files"
-            log_success "Application files copied to $APP_DIR."
+            local source_dir="$(dirname "$SCRIPT_DIR")"
+            if [[ -d "$source_dir" && "$source_dir" != "$APP_DIR" ]]; then
+                log_info "Copying application files from $source_dir to $APP_DIR..."
+                # Copy all files except the target directory itself
+                cp -r "$source_dir"/* "$APP_DIR/" || log_error "Failed to copy application files"
+                log_success "Application files copied to $APP_DIR."
+            else
+                log_info "Source directory is same as target directory, skipping file copy"
+                log_success "Application files are already in place."
+            fi
         fi
     fi
     
