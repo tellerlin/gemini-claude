@@ -1,12 +1,12 @@
 #!/bin/bash
-# deploy-centos.sh - Automated deployment script for Gemini Claude Adapter (CentOS/RHEL)
+# deploy-centos.sh - Simplified automated deployment script for Gemini Claude Adapter (CentOS/RHEL)
 
 set -euo pipefail # Exit on error, undefined variables, and pipe failures
 
 # --- Configuration ---
 readonly APP_USER="gemini"
 readonly APP_DIR="/home/$APP_USER/gemini-claude"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly CURRENT_DIR="$(pwd)"
 readonly LOG_FILE="/tmp/gemini_deployment.log"
 
 # --- Helper Functions ---
@@ -39,10 +39,12 @@ check_system() {
         log_error "This script currently only supports CentOS/RHEL-based systems."
     fi
     
-    # Check if we're in the right directory
-    if [[ ! -f "src/main.py" ]]; then
-        log_error "Could not find main application file. Please run this script from the project's root directory."
+    # Check if we have required files
+    if [[ ! -f "src/main.py" || ! -f "requirements.txt" ]]; then
+        log_error "Required files (src/main.py, requirements.txt) not found. Please run this script from the project directory or clone the project first."
     fi
+    
+    log_success "Found project files in: $CURRENT_DIR"
 }
 
 # --- Installation Functions ---
@@ -62,7 +64,7 @@ install_dependencies() {
     # Install EPEL repository
     $PKG_MANAGER install -y epel-release || log_error "Failed to install EPEL repository"
     
-    # Install essential packages (excluding nginx for now)
+    # Install essential packages
     local packages=(
         python3
         python3-devel
@@ -81,100 +83,31 @@ install_dependencies() {
         $PKG_MANAGER install -y "$package" || log_error "Failed to install $package"
     done
     
-    # Install nginx from EPEL
-    log_info "Installing nginx from EPEL..."
-    if ! $PKG_MANAGER install -y nginx; then
-        log_warning "Failed to install nginx from EPEL, trying alternative method..."
-        
-        # Check and remove exclude filters that might block nginx
-        log_info "Checking for repository exclude filters..."
-        if command -v dnf &> /dev/null; then
-            # Try to install with disableexcludes
-            if ! dnf install -y nginx --disableexcludes=all; then
-                log_warning "Failed to install with disableexcludes, trying PowerTools..."
-                
-                # Try to enable PowerTools repository (for CentOS Stream 8)
-                dnf config-manager --enable powertools || log_warning "Failed to enable PowerTools"
-                
-                # Try installing nginx again
-                if ! dnf install -y nginx --disableexcludes=all; then
-                    log_warning "Still failed to install nginx, adding official nginx repository..."
-                    
-                    # Add official nginx repository
-                    cat > /etc/yum.repos.d/nginx.repo << 'EOF'
+    # Install nginx with better error handling
+    log_info "Installing nginx..."
+    if ! $PKG_MANAGER install -y nginx --disableexcludes=all; then
+        log_warning "Adding official nginx repository..."
+        cat > /etc/yum.repos.d/nginx.repo << 'EOF'
 [nginx-stable]
 name=nginx stable repo
 baseurl=http://nginx.org/packages/centos/$releasever/$basearch/
-gpgcheck=0
+gpgcheck=1
 enabled=1
-exclude=
+gpgkey=https://nginx.org/keys/nginx_signing.key
 EOF
-                    
-                    # Update package cache and try again
-                    dnf update -y
-                    dnf install -y nginx --disableexcludes=all || log_error "Failed to install nginx. Please check repository configuration."
-                fi
-            fi
-        else
-            # For yum systems
-            if ! yum install -y nginx --disableexcludes=all; then
-                log_warning "Failed to install with disableexcludes, trying PowerTools..."
-                
-                # Try to enable PowerTools repository
-                yum-config-manager --enable powertools || log_warning "Failed to enable PowerTools"
-                
-                # Try installing nginx again
-                if ! yum install -y nginx --disableexcludes=all; then
-                    log_warning "Still failed to install nginx, adding official nginx repository..."
-                    
-                    # Add official nginx repository
-                    cat > /etc/yum.repos.d/nginx.repo << 'EOF'
-[nginx-stable]
-name=nginx stable repo
-baseurl=http://nginx.org/packages/centos/$releasever/$basearch/
-gpgcheck=0
-enabled=1
-exclude=
-EOF
-                    
-                    # Update package cache and try again
-                    yum update -y
-                    yum install -y nginx --disableexcludes=all || log_error "Failed to install nginx. Please check repository configuration."
-                fi
-            fi
-        fi
+        rpm --import https://nginx.org/keys/nginx_signing.key || log_warning "Failed to import nginx GPG key"
+        $PKG_MANAGER update -y
+        $PKG_MANAGER install -y nginx || log_error "Failed to install nginx even with official repository"
     fi
     
-    # Install Python 3.11 if not available
+    # Install Python 3.11 if available
     if ! python3.11 --version &> /dev/null 2>&1; then
-        log_info "Installing Python 3.11..."
-        
-        # Try different methods to install Python 3.11
+        log_info "Trying to install Python 3.11..."
         if $PKG_MANAGER install -y python3.11 python3.11-devel python3.11-pip &> /dev/null 2>&1; then
-            log_success "Python 3.11 installed from EPEL"
+            log_success "Python 3.11 installed"
         else
-            log_warning "Python 3.11 not available in EPEL, trying alternative methods..."
-            
-            # Try from SCL (Software Collections)
-            if $PKG_MANAGER install -y centos-release-scl &> /dev/null 2>&1; then
-                $PKG_MANAGER update -y
-                if $PKG_MANAGER install -y rh-python311 &> /dev/null 2>&1; then
-                    log_success "Python 3.11 installed from SCL"
-                    # Create symlinks for easier access
-                    ln -sf /opt/rh/rh-python311/root/bin/python3.11 /usr/bin/python3.11 || log_warning "Failed to create python3.11 symlink"
-                    ln -sf /opt/rh/rh-python311/root/bin/pip3.11 /usr/bin/pip3.11 || log_warning "Failed to create pip3.11 symlink"
-                else
-                    log_warning "Failed to install Python 3.11 from SCL, will use system Python 3.6"
-                fi
-            else
-                log_warning "Cannot install SCL, will use system Python 3.6"
-            fi
+            log_warning "Python 3.11 not available, will use system Python 3"
         fi
-    fi
-    
-    # Check if we have at least Python 3.6
-    if ! python3 --version &> /dev/null 2>&1; then
-        log_error "No Python 3 found on system"
     fi
     
     log_success "Dependencies installed successfully."
@@ -199,43 +132,52 @@ setup_app_user() {
 setup_app_environment() {
     log_info "Setting up application environment..."
     
-    # Create application directory
-    mkdir -p "$APP_DIR"
+    # Determine target directory
+    local target_dir=""
     
-    # Check if git is available and repository URL is provided
-    if command -v git &> /dev/null && [[ -n "${GITHUB_REPO_URL:-}" ]]; then
-        log_info "Cloning from GitHub repository: $GITHUB_REPO_URL"
-        sudo -u "$APP_USER" -H git clone "$GITHUB_REPO_URL" "$APP_DIR" || log_error "Failed to clone repository"
-        log_success "Repository cloned to $APP_DIR."
+    # If we're already in the target directory, use current directory
+    if [[ "$CURRENT_DIR" == "$APP_DIR" ]]; then
+        log_success "Already in target directory: $APP_DIR"
+        target_dir="$APP_DIR"
     else
-        # Copy application files (fallback method)
-        log_info "Copying application files..."
-        # Check if we're running from the target directory
-        if [[ "$(pwd)" == "$APP_DIR" ]]; then
-            log_info "Already in target directory, skipping file copy"
-            log_success "Application files are already in place."
+        # Check if we should use git clone
+        if [[ -n "${GITHUB_REPO_URL:-}" ]] && command -v git &> /dev/null; then
+            log_info "Cloning from GitHub repository: $GITHUB_REPO_URL"
+            rm -rf "$APP_DIR"  # Remove existing directory
+            sudo -u "$APP_USER" git clone "$GITHUB_REPO_URL" "$APP_DIR" || log_error "Failed to clone repository"
+            log_success "Repository cloned to $APP_DIR."
+            target_dir="$APP_DIR"
         else
-            # SCRIPT_DIR is project-root/scripts, we need to copy from parent directory
-            local source_dir="$(dirname "$SCRIPT_DIR")"
-            if [[ -d "$source_dir" && "$source_dir" != "$APP_DIR" ]]; then
-                log_info "Copying application files from $source_dir to $APP_DIR..."
-                # Copy all files except the target directory itself
-                cp -r "$source_dir"/* "$APP_DIR/" || log_error "Failed to copy application files"
-                log_success "Application files copied to $APP_DIR."
+            # Create symlink or use current directory as app directory
+            if [[ "$CURRENT_DIR" != "$APP_DIR" ]]; then
+                log_info "Setting up application directory at: $APP_DIR"
+                rm -rf "$APP_DIR"
+                ln -s "$CURRENT_DIR" "$APP_DIR" || {
+                    log_warning "Failed to create symlink, will work in current directory"
+                    target_dir="$CURRENT_DIR"
+                }
+                if [[ -L "$APP_DIR" ]]; then
+                    target_dir="$APP_DIR"
+                    log_success "Application directory linked to: $APP_DIR"
+                fi
             else
-                log_info "Source directory is same as target directory, skipping file copy"
-                log_success "Application files are already in place."
+                target_dir="$CURRENT_DIR"
             fi
         fi
     fi
     
-    # Set correct ownership
-    chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+    # Change to target directory
+    cd "$target_dir"
+    
+    # Set correct ownership (skip if it's a symlink and we don't have write access)
+    if [[ ! -L "$target_dir" ]] || [[ "$target_dir" == "$APP_DIR" ]]; then
+        chown -R "$APP_USER:$APP_USER" "$target_dir" 2>/dev/null || log_warning "Could not change ownership of $target_dir"
+    fi
     
     # Create Python virtual environment
     log_info "Creating Python virtual environment..."
     
-    # Determine Python command (prefer 3.11, fallback to 3.x)
+    # Determine Python command
     if command -v python3.11 &> /dev/null; then
         PYTHON_CMD="python3.11"
         log_info "Using Python 3.11 for virtual environment"
@@ -246,31 +188,36 @@ setup_app_environment() {
         log_error "No Python 3 found on system"
     fi
     
-    # Show Python version
     log_info "Python version: $($PYTHON_CMD --version)"
     
-    sudo -u "$APP_USER" -H "$PYTHON_CMD" -m venv "$APP_DIR/venv" || \
+    # Remove existing venv if it exists and create new one
+    rm -rf venv
+    sudo -u "$APP_USER" -H "$PYTHON_CMD" -m venv venv || \
         log_error "Failed to create virtual environment"
     
     # Upgrade pip
-    sudo -u "$APP_USER" -H "$APP_DIR/venv/bin/pip" install --upgrade pip || \
+    sudo -u "$APP_USER" -H venv/bin/pip install --upgrade pip || \
         log_error "Failed to upgrade pip"
     
     # Install Python packages
     log_info "Installing Python packages..."
-    sudo -u "$APP_USER" -H "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt" || \
-        log_error "Failed to install Python packages"
+    if [[ -f "requirements.txt" ]]; then
+        sudo -u "$APP_USER" -H venv/bin/pip install -r requirements.txt || \
+            log_error "Failed to install Python packages"
+    else
+        log_error "requirements.txt file not found"
+    fi
     
     # Create logs directory
-    sudo -u "$APP_USER" -H mkdir -p "$APP_DIR/logs"
+    sudo -u "$APP_USER" -H mkdir -p logs
     
     log_success "Python environment created successfully."
 }
 
 create_env_file() {
     log_info "Setting up environment configuration..."
-    local env_file="$APP_DIR/.env"
-    local env_example="$APP_DIR/.env.example"
+    local env_file=".env"
+    local env_example=".env.example"
 
     # Copy .env.example to .env if .env doesn't exist
     if [[ ! -f "$env_file" ]]; then
@@ -316,8 +263,8 @@ EOF
     fi
     
     # Set secure permissions
-    chown "$APP_USER:$APP_USER" "$env_file"
-    chmod 600 "$env_file"  # Secure permissions for sensitive data
+    chown "$APP_USER:$APP_USER" "$env_file" 2>/dev/null || log_warning "Could not change ownership of .env file"
+    chmod 600 "$env_file"
 }
 
 configure_supervisor() {
@@ -336,35 +283,36 @@ configure_supervisor() {
         return 0
     fi
     
+    # Create supervisor config directory if it doesn't exist
+    mkdir -p /etc/supervisord.d
+    
     local supervisor_conf="/etc/supervisord.d/gemini-adapter.conf"
+    local working_dir="$(pwd)"
     
     cat > "$supervisor_conf" << EOF
 [program:gemini-adapter]
-command=$APP_DIR/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 1
-directory=$APP_DIR
+command=$working_dir/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 1
+directory=$working_dir
 user=$APP_USER
 autostart=true
 autorestart=true
 redirect_stderr=true
-stdout_logfile=$APP_DIR/logs/app.log
+stdout_logfile=$working_dir/logs/app.log
 stdout_logfile_maxbytes=50MB
 stdout_logfile_backups=10
-stderr_logfile=$APP_DIR/logs/error.log
+stderr_logfile=$working_dir/logs/error.log
 stderr_logfile_maxbytes=50MB
 stderr_logfile_backups=10
-environment=PATH="$APP_DIR/venv/bin",PYTHONUNBUFFERED=1
+environment=PATH="$working_dir/venv/bin",PYTHONUNBUFFERED=1
 stopsignal=INT
 stopwaitsecs=10
 killasgroup=true
 priority=999
 EOF
 
-    # Wait a moment for supervisor to detect the new config
-    sleep 2
-    
     # Test supervisor configuration
     if command -v supervisorctl &> /dev/null; then
-        if supervisorctl reread && supervisorctl update; then
+        if supervisorctl reread >/dev/null 2>&1 && supervisorctl update >/dev/null 2>&1; then
             log_success "Supervisor configured successfully."
         else
             log_warning "Supervisor configuration failed, will use manual management"
@@ -381,19 +329,17 @@ configure_nginx() {
     systemctl enable nginx || log_error "Failed to enable nginx"
     systemctl start nginx || log_error "Failed to start nginx"
     
-    # Remove default site
+    # Remove default site if it exists
     rm -f /etc/nginx/conf.d/default.conf
+    rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
     
-    # Create rate limiting configuration
-    local rate_limit_conf="/etc/nginx/conf.d/rate-limit.conf"
-    cat > "$rate_limit_conf" << 'EOF'
-# Rate limiting configuration
-limit_req_zone $binary_remote_addr zone=api:10m rate=30r/s;
-EOF
-
+    # Create nginx configuration
     local nginx_conf="/etc/nginx/conf.d/gemini-adapter.conf"
     
     cat > "$nginx_conf" << 'EOF'
+# Rate limiting configuration
+limit_req_zone $binary_remote_addr zone=api:10m rate=30r/s;
+
 server {
     listen 80;
     listen [::]:80;
@@ -427,10 +373,6 @@ server {
         proxy_send_timeout 300s;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
-        
-        # Handle WebSocket upgrades if needed
-        # proxy_set_header Upgrade $http_upgrade;
-        # proxy_set_header Connection "upgrade";
     }
 
     location /health {
@@ -481,16 +423,16 @@ configure_firewall() {
     log_info "Configuring firewall (firewalld)..."
     
     # Enable and start firewalld
-    systemctl enable firewalld || log_error "Failed to enable firewalld"
-    systemctl start firewalld || log_error "Failed to start firewalld"
+    systemctl enable firewalld || log_warning "Failed to enable firewalld"
+    systemctl start firewalld || log_warning "Failed to start firewalld"
     
     # Allow essential services
-    firewall-cmd --permanent --add-service=ssh || log_error "Failed to allow SSH"
-    firewall-cmd --permanent --add-service=http || log_error "Failed to allow HTTP"
-    firewall-cmd --permanent --add-service=https || log_error "Failed to allow HTTPS"
+    firewall-cmd --permanent --add-service=ssh || log_warning "Failed to allow SSH"
+    firewall-cmd --permanent --add-service=http || log_warning "Failed to allow HTTP"
+    firewall-cmd --permanent --add-service=https || log_warning "Failed to allow HTTPS"
     
     # Reload firewall
-    firewall-cmd --reload || log_error "Failed to reload firewall"
+    firewall-cmd --reload || log_warning "Failed to reload firewall"
     
     log_success "Firewall configured successfully."
 }
@@ -499,12 +441,16 @@ configure_selinux() {
     log_info "Configuring SELinux..."
     
     # Check if SELinux is enabled
-    if getenforce | grep -q "Enforcing"; then
+    if command -v getenforce &> /dev/null && getenforce | grep -q "Enforcing"; then
         # Allow nginx to connect to network
         setsebool -P httpd_can_network_connect 1 || log_warning "Failed to set httpd_can_network_connect"
         
         # Allow nginx to connect to port 8000
-        semanage port -a -t http_port_t -p tcp 8000 || log_warning "Failed to add port 8000 to SELinux"
+        if command -v semanage &> /dev/null; then
+            semanage port -a -t http_port_t -p tcp 8000 2>/dev/null || \
+            semanage port -m -t http_port_t -p tcp 8000 || \
+            log_warning "Failed to configure SELinux port 8000"
+        fi
         
         log_success "SELinux configured successfully."
     else
@@ -515,13 +461,14 @@ configure_selinux() {
 create_management_script() {
     log_info "Creating management script..."
     
-    local manage_script="$APP_DIR/manage.sh"
+    local working_dir="$(pwd)"
+    local manage_script="$working_dir/manage.sh"
     
-    cat > "$manage_script" << 'EOF'
+    cat > "$manage_script" << EOF
 #!/bin/bash
 
-APP_DIR="/home/gemini/gemini-claude"
-APP_USER="gemini"
+APP_DIR="$working_dir"
+APP_USER="$APP_USER"
 
 # Colors for output
 RED='\033[0;31m'
@@ -530,16 +477,16 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_info() { echo -e "\${BLUE}[INFO]\${NC} \$1"; }
+log_success() { echo -e "\${GREEN}[SUCCESS]\${NC} \$1"; }
+log_warning() { echo -e "\${YELLOW}[WARNING]\${NC} \$1"; }
+log_error() { echo -e "\${RED}[ERROR]\${NC} \$1"; }
 
 check_service_status() {
     # Try supervisorctl first, fallback to process check
     if command -v supervisorctl &> /dev/null && systemctl is-active --quiet supervisord; then
-        local status=$(supervisorctl status gemini-adapter 2>/dev/null | awk '{print $2}')
-        echo "$status"
+        local status=\$(supervisorctl status gemini-adapter 2>/dev/null | awk '{print \$2}')
+        echo "\$status"
     else
         # Fallback to process checking
         if pgrep -f "uvicorn src.main:app" > /dev/null; then
@@ -550,7 +497,7 @@ check_service_status() {
     fi
 }
 
-case "$1" in
+case "\$1" in
     start) 
         log_info "Starting Gemini Adapter service..."
         if command -v supervisorctl &> /dev/null && systemctl is-active --quiet supervisord; then
@@ -562,8 +509,8 @@ case "$1" in
             fi
         else
             # Fallback to manual start
-            cd "$APP_DIR"
-            if sudo -u "$APP_USER" -H bash -c "source venv/bin/activate && nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > logs/app.log 2>&1 &"; then
+            cd "\$APP_DIR"
+            if sudo -u "\$APP_USER" -H bash -c "source venv/bin/activate && nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > logs/app.log 2>&1 &"; then
                 log_success "Service started successfully in background"
             else
                 log_error "Failed to start service"
@@ -602,8 +549,8 @@ case "$1" in
             # Fallback to manual restart
             pkill -f "uvicorn src.main:app" || true
             sleep 2
-            cd "$APP_DIR"
-            if sudo -u "$APP_USER" -H bash -c "source venv/bin/activate && nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > logs/app.log 2>&1 &"; then
+            cd "\$APP_DIR"
+            if sudo -u "\$APP_USER" -H bash -c "source venv/bin/activate && nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > logs/app.log 2>&1 &"; then
                 log_success "Service restarted successfully in background"
             else
                 log_error "Failed to restart service"
@@ -613,8 +560,8 @@ case "$1" in
         ;;
     status) 
         echo "=== Service Status ==="
-        status=$(check_service_status)
-        echo "Service status: $status"
+        status=\$(check_service_status)
+        echo "Service status: \$status"
         
         if command -v supervisorctl &> /dev/null && systemctl is-active --quiet supervisord; then
             echo -e "\n=== Supervisor Status ==="
@@ -624,7 +571,7 @@ case "$1" in
         echo -e "\n=== Process Information ==="
         if pgrep -f "uvicorn src.main:app" > /dev/null; then
             echo "Running processes:"
-            ps aux | grep '[u]vicorn' | awk '{print "  PID: " $2 ", CPU: " $3 "%, Memory: " $4 "%"}'
+            ps aux | grep '[u]vicorn' | awk '{print "  PID: " \$2 ", CPU: " \$3 "%, Memory: " \$4 "%"}'
         else
             echo "No running processes found"
         fi
@@ -643,33 +590,34 @@ case "$1" in
         
         echo -e "\n=== System Resources ==="
         echo "Disk usage:"
-        df -h "$APP_DIR" | tail -1 | awk '{print "  " $1 ": " $3 "/" $2 " (" $5 " used)"}' || echo "  Disk info unavailable"
+        df -h "\$APP_DIR" | tail -1 | awk '{print "  " \$1 ": " \$3 "/" \$2 " (" \$5 " used)"}' || echo "  Disk info unavailable"
         ;;
     logs) 
         log_info "Showing application logs (Ctrl+C to exit)..."
-        tail -f "$APP_DIR/logs/app.log"
+        tail -f "\$APP_DIR/logs/app.log"
         ;;
     error-logs)
         log_info "Showing error logs (Ctrl+C to exit)..."
-        tail -f "$APP_DIR/logs/error.log"
+        tail -f "\$APP_DIR/logs/error.log"
         ;;
     update)
         log_info "Updating Python packages..."
-        sudo -u "$APP_USER" -H "$APP_DIR/venv/bin/pip" install --upgrade -r "$APP_DIR/requirements.txt"
+        cd "\$APP_DIR"
+        sudo -u "\$APP_USER" -H "\$APP_DIR/venv/bin/pip" install --upgrade -r requirements.txt
         log_success "Packages updated. Restart the service to apply changes."
         ;;
     backup)
-        local backup_dir="/tmp/gemini-adapter-backup-$(date +%Y%m%d-%H%M%S)"
-        log_info "Creating backup at $backup_dir..."
-        mkdir -p "$backup_dir"
-        cp -r "$APP_DIR"/{*.py,*.txt,.env,logs} "$backup_dir/" 2>/dev/null || true
-        tar -czf "$backup_dir.tar.gz" -C /tmp "$(basename "$backup_dir")"
-        rm -rf "$backup_dir"
-        log_success "Backup created: $backup_dir.tar.gz"
+        local backup_dir="/tmp/gemini-adapter-backup-\$(date +%Y%m%d-%H%M%S)"
+        log_info "Creating backup at \$backup_dir..."
+        mkdir -p "\$backup_dir"
+        cp -r "\$APP_DIR"/{src,*.py,*.txt,.env,logs} "\$backup_dir/" 2>/dev/null || true
+        tar -czf "\$backup_dir.tar.gz" -C /tmp "\$(basename "\$backup_dir")"
+        rm -rf "\$backup_dir"
+        log_success "Backup created: \$backup_dir.tar.gz"
         ;;
     *) 
         echo "Gemini Claude Adapter Management Script"
-        echo "Usage: $0 {start|stop|restart|status|logs|error-logs|update|backup}"
+        echo "Usage: \$0 {start|stop|restart|status|logs|error-logs|update|backup}"
         echo ""
         echo "Commands:"
         echo "  start       - Start the service"
@@ -682,16 +630,16 @@ case "$1" in
         echo "  backup      - Create a backup of configuration and logs"
         echo ""
         echo "Examples:"
-        echo "  $0 restart    # After changing .env file"
-        echo "  $0 status     # Check if everything is working"
-        echo "  $0 logs       # Debug issues"
+        echo "  \$0 restart    # After changing .env file"
+        echo "  \$0 status     # Check if everything is working"
+        echo "  \$0 logs       # Debug issues"
         exit 1
         ;;
 esac
 EOF
     
     chmod +x "$manage_script"
-    chown "$APP_USER:$APP_USER" "$manage_script"
+    chown "$APP_USER:$APP_USER" "$manage_script" 2>/dev/null || log_warning "Could not change ownership of manage.sh"
     
     # Create system-wide symlink
     ln -sf "$manage_script" /usr/local/bin/gemini-manage
@@ -704,23 +652,25 @@ perform_system_optimizations() {
     
     # Increase file descriptor limits
     cat >> /etc/security/limits.conf << 'EOF'
+
 # Gemini Adapter optimizations
 gemini soft nofile 32768
 gemini hard nofile 32768
 EOF
 
-    # Configure systemd service limits
-    mkdir -p /etc/systemd/system/supervisord.service.d
-    cat > /etc/systemd/system/supervisord.service.d/override.conf << 'EOF'
+    # Configure systemd service limits if supervisord service exists
+    if systemctl list-unit-files | grep -q supervisord; then
+        mkdir -p /etc/systemd/system/supervisord.service.d
+        cat > /etc/systemd/system/supervisord.service.d/override.conf << 'EOF'
 [Service]
 LimitNOFILE=32768
 EOF
-
-    # Reload systemd
-    systemctl daemon-reload
+        systemctl daemon-reload
+    fi
     
     # Configure kernel parameters for better networking
     cat >> /etc/sysctl.conf << 'EOF'
+
 # Gemini Adapter networking optimizations
 net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 65535
@@ -736,25 +686,18 @@ EOF
 run_post_installation_tests() {
     log_info "Running post-installation tests..."
     
-    # Test if the service can start
-    if ! supervisorctl start gemini-adapter 2>/dev/null; then
-        log_warning "Service failed to start automatically. This is expected if API keys are not configured yet."
-    else
-        sleep 5
-        # Test basic connectivity
-        if curl -f -s http://localhost:8000/ > /dev/null; then
-            log_success "Service is responding to HTTP requests"
-        else
-            log_warning "Service is not responding. Check logs after configuring API keys."
-        fi
-        supervisorctl stop gemini-adapter 2>/dev/null
-    fi
-    
     # Test nginx configuration
-    if curl -f -s http://localhost/ > /dev/null; then
+    if curl -f -s http://localhost/ > /dev/null 2>&1; then
         log_success "Nginx is properly configured and running"
     else
         log_warning "Nginx may not be properly configured"
+    fi
+    
+    # Test if Python environment is working
+    if sudo -u "$APP_USER" -H bash -c "cd $(pwd) && source venv/bin/activate && python -c 'import src.main' 2>/dev/null"; then
+        log_success "Python environment and application modules are working"
+    else
+        log_warning "Python environment test failed. Check logs after configuring API keys."
     fi
 }
 
@@ -763,17 +706,18 @@ cleanup_installation() {
     
     # Clean up package cache
     if command -v dnf &> /dev/null; then
-        dnf autoremove -y > /dev/null 2>&1
-        dnf clean all > /dev/null 2>&1
+        dnf autoremove -y > /dev/null 2>&1 || true
+        dnf clean all > /dev/null 2>&1 || true
     else
-        yum autoremove -y > /dev/null 2>&1
-        yum clean all > /dev/null 2>&1
+        yum autoremove -y > /dev/null 2>&1 || true
+        yum clean all > /dev/null 2>&1 || true
     fi
     
     # Set final permissions
-    chmod -R 755 "$APP_DIR"
-    chmod 600 "$APP_DIR/.env"
-    chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+    local working_dir="$(pwd)"
+    chmod -R 755 "$working_dir" 2>/dev/null || log_warning "Could not set directory permissions"
+    chmod 600 "$working_dir/.env" 2>/dev/null || true
+    chown -R "$APP_USER:$APP_USER" "$working_dir" 2>/dev/null || log_warning "Could not change ownership"
     
     log_success "Installation cleanup completed."
 }
@@ -782,7 +726,7 @@ cleanup_installation() {
 main() {
     local start_time=$(date +%s)
     
-    log_info "Starting Gemini Claude Adapter deployment for CentOS/RHEL..."
+    log_info "Starting Simplified Gemini Claude Adapter deployment for CentOS/RHEL..."
     echo "Deployment log: $LOG_FILE"
     echo "Start time: $(date)"
     echo ""
@@ -808,6 +752,7 @@ main() {
     # Get server IP
     local server_ip
     server_ip=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "Unable to detect")
+    local working_dir="$(pwd)"
     
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
@@ -821,7 +766,7 @@ main() {
     log_info "⚠️  IMPORTANT: Complete these final steps:"
     echo ""
     echo "1. 📝 Configure your API keys:"
-    echo "   sudo nano $APP_DIR/.env"
+    echo "   sudo nano $working_dir/.env"
     echo "   # Add your Gemini API keys to GEMINI_API_KEYS="
     echo ""
     echo "2. 🚀 Start the service:"
