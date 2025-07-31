@@ -90,6 +90,68 @@ curl http://localhost:80/v1/models \
   -H "Authorization: Bearer your-client-key"
 ```
 
+### Step 4: Test Q&A Functionality
+
+Test the complete Q&A functionality using the Anthropic Messages API:
+
+```bash
+# Simple Q&A test
+curl -X POST http://localhost:80/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-client-key" \
+  -H "Anthropic-Version: 2023-06-01" \
+  -d '{
+    "model": "claude-3-5-sonnet",
+    "max_tokens": 1000,
+    "messages": [
+      {
+        "role": "user", 
+        "content": "Hello! Can you explain what is machine learning in simple terms?"
+      }
+    ]
+  }'
+
+# Multi-turn conversation test
+curl -X POST http://localhost:80/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-client-key" \
+  -H "Anthropic-Version: 2023-06-01" \
+  -d '{
+    "model": "claude-3-5-sonnet",
+    "max_tokens": 1000,
+    "messages": [
+      {
+        "role": "user", 
+        "content": "What are the main benefits of Python programming?"
+      },
+      {
+        "role": "assistant",
+        "content": "Python offers several key benefits:\n\n1. **Simple and readable syntax** - Easy to learn and understand\n2. **Versatile** - Used for web development, data science, AI, automation\n3. **Large ecosystem** - Extensive libraries and frameworks\n4. **Cross-platform** - Runs on Windows, macOS, and Linux\n5. **Strong community support** - Active developer community and resources"
+      },
+      {
+        "role": "user",
+        "content": "Can you give me a simple example of Python code?"
+      }
+    ]
+  }'
+
+# Test with different models
+curl -X POST http://localhost:80/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-client-key" \
+  -H "Anthropic-Version: 2023-06-01" \
+  -d '{
+    "model": "claude-3-5-haiku",
+    "max_tokens": 500,
+    "messages": [
+      {
+        "role": "user", 
+        "content": "Write a haiku about programming"
+      }
+    ]
+  }'
+```
+
 ## ⚙️ Essential Configuration
 
 Edit your `.env` file with these **required** settings:
@@ -408,18 +470,6 @@ curl -X POST http://localhost:80/cache/clear \
 -   **Memory Usage**: Monitor `CACHE_MAX_SIZE` setting. Reduce cache size if memory usage is high.
 
 ### Advanced Diagnostics
-
-#### Check Detailed Service Health
-```bash
-curl http://localhost:80/health \
-  -H "Authorization: Bearer your-client-key"
-```
-
-#### View Performance Metrics
-```bash
-curl http://localhost:80/metrics \
-  -H "Authorization: Bearer your-client-key"
-```
 
 #### Check Recent Errors
 ```bash

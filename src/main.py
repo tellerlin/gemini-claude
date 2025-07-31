@@ -21,9 +21,9 @@ from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from collections import defaultdict, deque
 
 # Import new optimization modules
-from .config import get_config, AppConfig
+from .config import get_config, AppConfig, GeminiConfig
 from .error_handling import error_monitor, monitor_errors, ErrorClassifier
-from .performance import response_cache, http_client, performance_monitor, monitor_performance
+from .performance import response_cache, http_client, performance_monitor, monitor_performance, get_performance_stats
 
 # Import Anthropic API compatibility layer
 try:
@@ -218,7 +218,7 @@ class GeminiKeyManager:
                 logger.warning("No available API keys.")
                 return None
 
-智能密钥选择：基于性能指标选择最佳密钥
+# Intelligent key selection: choose best key based on performance metrics
             selected_key = self._select_best_key(active_keys)
             
             self.last_key_used = selected_key.key
