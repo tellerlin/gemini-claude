@@ -231,12 +231,28 @@ docker-compose down
 # Pull the latest changes
 git pull origin main
 
-# Rebuild and restart the service
-docker-compose up -d --build
+# Rebuild and restart the service (important: use --no-cache to ensure changes are applied)
+docker-compose build --no-cache
+docker-compose up -d
 
 # Check the service status
 docker-compose ps
 docker-compose logs -f
+```
+
+### Method 2: Force Rebuild (When code changes don't take effect)
+
+If you've pulled changes but the endpoints still don't work (like `/metrics` or `/cache` returning 404):
+
+```bash
+# Complete rebuild with cache clearing
+docker-compose down
+docker system prune -f  # Remove unused Docker objects
+docker-compose build --no-cache
+docker-compose up -d
+
+# Verify the service is running with new code
+curl http://localhost:80/
 ```
 
 ### Method 2: Manual Update
