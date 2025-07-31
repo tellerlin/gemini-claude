@@ -70,17 +70,17 @@ docker-compose ps
 docker-compose logs -f
 ```
 
-服务将在 `http://localhost:8000`（或您服务器的 IP）可用。
+服务将在 `http://localhost:80`（或您服务器的 IP）可用。
 
 ### 步骤 3：测试您的部署
 
 ```bash
 # 基本健康检查（无需认证）
-curl http://localhost:8000/health
+curl http://localhost:80/health
 
 # 使用您的 API 密钥测试
-curl http://localhost:8000/v1/models \
-  -H "Authorization: Bearer your-client-key-123"
+curl http://localhost:80/v1/models \
+  -H "Authorization: Bearer your-client-key"
 ```
 
 ## ⚙️ 基本配置
@@ -92,32 +92,32 @@ curl http://localhost:8000/v1/models \
 # 必需：Gemini API 配置
 # =============================================
 # 从以下获取您的 API 密钥：https://makersuite.google.com/app/apikey
-GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
+GEMINI_API_KEYS=AIzaSyBt3JTEUjrNFb392jP-2...,AIzaSyBsfnqmf7hCNA8….,AIzaSyB_ic4AmBCWeFGnhV4W...
 
 # =============================================
 # 必需：安全配置
 # =============================================
 # 生成强密钥：openssl rand -hex 32
-SECURITY_ADAPTER_API_KEYS=your-client-key-123,your-client-key-456
+ADAPTER_API_KEYS=your-client-key
 
 # =============================================
 # 可选：管理员访问
 # =============================================
 # 管理端点的可选管理员密钥
-SECURITY_ADMIN_API_KEYS=your-admin-key-abc,your-admin-key-def
+ADMIN_API_KEYS=your-admin-key
 
 # =============================================
 # 可选：服务配置
 # =============================================
-SERVICE_HOST=0.0.0.0
-SERVICE_PORT=8000
-SERVICE_LOG_LEVEL=INFO
+CACHE_ENABLED=true
+PERF_HTTP2_ENABLED=true
+SERVICE_ENABLE_METRICS=true
 ```
 
 **⚠️ 重要安全说明：**
 - 保护您的 `.env` 文件，切勿提交到版本控制
-- 为 `SECURITY_ADAPTER_API_KEYS` 使用强而唯一的 API 密钥
-- 为生产环境设置 `SECURITY_ADMIN_API_KEYS`
+- 为 `ADAPTER_API_KEYS` 使用强而唯一的 API 密钥
+- 为生产环境设置 `ADMIN_API_KEYS`
 - 使用以下方式生成安全密钥：`openssl rand -hex 32`
 
 ### 步骤 3：启动服务
@@ -128,7 +128,7 @@ SERVICE_LOG_LEVEL=INFO
 docker-compose up -d
 ```
 
-服务现在将在后台运行。API 将在 `http://localhost:8000`（或您服务器的 IP 地址）访问。
+服务现在将在后台运行。API 将在 `http://localhost:80`（或您服务器的 IP 地址）访问。
 
 ### 步骤 4：管理服务
 
@@ -231,13 +231,13 @@ docker-compose up -d
 
 ```bash
 # 多个 Gemini 密钥
-GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
+GEMINI_API_KEYS=AIzaSyBt3JTEUjrNFb392jP-2...,AIzaSyBsfnqmf7hCNA8….,AIzaSyB_ic4AmBCWeFGnhV4W...
 
 # 多个客户端密钥
-ADAPTER_API_KEYS=client-key-123,client-key-456,client-key-abc
+ADAPTER_API_KEYS=your-client-key
 
 # 管理员密钥（与客户端密钥分离）
-ADMIN_API_KEYS=admin-key-secure-1,admin-key-secure-2
+ADMIN_API_KEYS=your-admin-key
 
 # 使用代理
 PROXY_URL=http://proxy.example.com:8080
@@ -251,9 +251,9 @@ PROXY_URL=http://proxy.example.com:8080
 2.  **查找 API 配置**：查找"Anthropic API 设置"或"Claude API 设置"部分。
 3.  **设置 API 端点**：
     -   在"API Base URL"或"Endpoint"字段中，输入您的适配器 URL：
-        `http://<your-vps-ip>:8000/v1`
+        `http://<your-vps-ip>:80/v1`
 4.  **设置 API 密钥**：
-    -   在"API Key"字段中，输入您在 `ADAPTER_API_KEYS` 中定义的**客户端密钥**之一。
+    -   在"API Key"字段中，输入您在 `ADAPTER_API_KEYS` 中定义的**客户端密钥**。
 5.  **保存并测试**：保存设置并尝试聊天完成以确认工作正常。
 
 ## 📡 API 端点
@@ -288,15 +288,15 @@ PROXY_URL=http://proxy.example.com:8080
 #### 示例：使用 `curl` 检查统计信息
 
 ```bash
-curl http://localhost:8000/stats \
-  -H "Authorization: Bearer your-client-key-123"
+curl http://localhost:80/stats \
+  -H "Authorization: Bearer your-client-key"
 ```
 
 #### 示例：使用 `curl` 重置密钥
 
 ```bash
-curl -X POST http://localhost:8000/admin/reset-key/AIza \
-  -H "Authorization: Bearer your-admin-key-abc"
+curl -X POST http://localhost:80/admin/reset-key/AIza \
+  -H "Authorization: Bearer your-admin-key"
 ```
 
 ## 🐛 故障排除
@@ -329,7 +329,7 @@ gemini-claude/
 ## 🔒 安全最佳实践
 
 1. **使用强 API 密钥**：使用 `openssl rand -hex 32` 生成
-2. **分离管理员密钥**：为 `SECURITY_ADMIN_API_KEYS` 设置不同的密钥
+2. **分离管理员密钥**：为 `ADMIN_API_KEYS` 设置不同的密钥
 3. **保护您的服务器**：使用防火墙规则限制访问
 4. **监控访问**：定期检查日志以发现未授权的尝试
 5. **保持更新**：定期使用 `git pull && docker-compose up -d --build` 拉取更新
@@ -366,8 +366,8 @@ GEMINI_PROXY_URL=http://proxy.example.com:8080
 # =============================================
 # 安全配置
 # =============================================
-SECURITY_ADAPTER_API_KEYS=your-client-key-123,your-client-key-456
-SECURITY_ADMIN_API_KEYS=your-admin-key-abc,your-admin-key-def
+ADAPTER_API_KEYS=your-client-key
+ADMIN_API_KEYS=your-admin-key
 SECURITY_ENABLE_IP_BLOCKING=true
 SECURITY_MAX_FAILED_ATTEMPTS=5
 SECURITY_BLOCK_DURATION=300

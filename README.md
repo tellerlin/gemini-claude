@@ -27,8 +27,8 @@ A high-performance, secure Gemini adapter with **complete Anthropic API compatib
 
 This adapter enforces API key authentication to protect your service. There are two levels of access:
 
-1.  **Client Keys (`SECURITY_ADAPTER_API_KEYS` or `ADAPTER_API_KEYS`)**: For standard users. These keys grant access to core functionalities like Anthropic Messages API (`/v1/messages`), token counting (`/v1/messages/count_tokens`), and listing models (`/v1/models`).
-2.  **Admin Keys (`SECURITY_ADMIN_API_KEYS` or `ADMIN_API_KEYS`)**: For administrators. These keys grant access to all endpoints, including protected management endpoints like resetting a Gemini key (`/admin/reset-key/{prefix}`).
+1.  **Client Keys (`ADAPTER_API_KEYS`)**: For standard users. These keys grant access to core functionalities like Anthropic Messages API (`/v1/messages`), token counting (`/v1/messages/count_tokens`), and listing models (`/v1/models`).
+2.  **Admin Keys (`ADMIN_API_KEYS`)**: For administrators. These keys grant access to all endpoints, including protected management endpoints like resetting a Gemini key (`/admin/reset-key/{prefix}`).
 
 If admin keys are not set, the client keys will also have access to admin endpoints. For production environments, it is **highly recommended** to set separate admin keys.
 
@@ -77,17 +77,17 @@ docker-compose ps
 docker-compose logs -f
 ```
 
-The service will be available at `http://localhost:8000` (or your server's IP).
+The service will be available at `http://localhost:80` (or your server's IP).
 
 ### Step 3: Test Your Deployment
 
 ```bash
 # Basic health check (no authentication required)
-curl http://localhost:8000/health
+curl http://localhost:80/health
 
 # Test with your API key
-curl http://localhost:8000/v1/models \
-  -H "Authorization: Bearer your-client-key-123"
+curl http://localhost:80/v1/models \
+  -H "Authorization: Bearer client15902"
 ```
 
 ## ⚙️ Essential Configuration
@@ -99,32 +99,32 @@ Edit your `.env` file with these **required** settings:
 # REQUIRED: Gemini API Configuration
 # =============================================
 # Get your API keys from: https://makersuite.google.com/app/apikey
-GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
+GEMINI_API_KEYS=AIzaSyBt3JTEUjrNFb392jP-2...,AIzaSyBsfnqmf7hCNA8….,AIzaSyB_ic4AmBCWeFGnhV4W...
 
 # =============================================
 # REQUIRED: Security Configuration
 # =============================================
 # Generate strong keys: openssl rand -hex 32
-SECURITY_ADAPTER_API_KEYS=your-client-key-123,your-client-key-456
+ADAPTER_API_KEYS=client15902
 
 # =============================================
 # OPTIONAL: Admin Access
 # =============================================
 # Optional admin keys for management endpoints
-SECURITY_ADMIN_API_KEYS=your-admin-key-abc,your-admin-key-def
+ADMIN_API_KEYS=admin15902
 
 # =============================================
 # OPTIONAL: Service Configuration
 # =============================================
-SERVICE_HOST=0.0.0.0
-SERVICE_PORT=8000
-SERVICE_LOG_LEVEL=INFO
+CACHE_ENABLED=true
+PERF_HTTP2_ENABLED=true
+SERVICE_ENABLE_METRICS=true
 ```
 
 **⚠️ Important Security Notes:**
 - Keep your `.env` file secure and never commit it to version control
-- Use strong, unique API keys for `SECURITY_ADAPTER_API_KEYS`
-- Set `SECURITY_ADMIN_API_KEYS` for production environments
+- Use strong, unique API keys for `ADAPTER_API_KEYS`
+- Set `ADMIN_API_KEYS` for production environments
 - Generate secure keys with: `openssl rand -hex 32`
 
 ### Step 3: Launch the Service
@@ -135,7 +135,7 @@ With your `.env` file configured, start the service using Docker Compose.
 docker-compose up -d
 ```
 
-The service will now be running in the background. The API will be accessible at `http://localhost:8000` (or your server's IP address).
+The service will now be running in the background. The API will be accessible at `http://localhost:80` (or your server's IP address).
 
 ### Step 4: Manage the Service
 
@@ -252,8 +252,8 @@ docker-compose up -d
 #### Security Configuration
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `SECURITY_ADAPTER_API_KEYS` | Yes | - | Client authentication keys |
-| `SECURITY_ADMIN_API_KEYS` | No | - | Admin authentication keys |
+| `ADAPTER_API_KEYS` | Yes | - | Client authentication keys |
+| `ADMIN_API_KEYS` | No | - | Admin authentication keys |
 | `SECURITY_ENABLE_IP_BLOCKING` | No | `true` | Enable IP blocking |
 | `SECURITY_MAX_FAILED_ATTEMPTS` | No | `5` | Max failed attempts before IP block |
 | `SECURITY_BLOCK_DURATION` | No | `300` | IP block duration in seconds |
@@ -289,13 +289,13 @@ docker-compose up -d
 
 ```bash
 # Multiple Gemini API keys
-GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
+GEMINI_API_KEYS=AIzaSyBt3JTEUjrNFb392jP-2...,AIzaSyBsfnqmf7hCNA8….,AIzaSyB_ic4AmBCWeFGnhV4W...
 
 # Client authentication keys
-SECURITY_ADAPTER_API_KEYS=client-key-123,client-key-456
+ADAPTER_API_KEYS=client15902
 
 # Admin authentication keys (optional)
-SECURITY_ADMIN_API_KEYS=admin-key-secure-1,admin-key-secure-2
+ADMIN_API_KEYS=admin15902
 
 # Performance optimization settings
 CACHE_ENABLED=true
@@ -311,9 +311,9 @@ To connect Claude Code which uses the Anthropic API format, follow these steps:
 2.  **Find API Configuration**: Look for "Anthropic API Settings" or "Claude API Settings" section.
 3.  **Set the API Endpoint**:
     -   In the "API Base URL" or "Endpoint" field, enter the URL of your adapter:
-        `http://<your-vps-ip>:8000/v1`
+        `http://<your-vps-ip>:80/v1`
 4.  **Set the API Key**:
-    -   In the "API Key" field, enter one of the **client keys** you defined in `ADAPTER_API_KEYS`.
+    -   In the "API Key" field, enter the **client key** you defined in `ADAPTER_API_KEYS` (e.g., `client15902`).
 5.  **Save and Test**: Save the settings and try a chat completion to confirm it's working.
 
 ### Supported Models
@@ -361,43 +361,43 @@ The adapter uses the latest Gemini 2.5 models for optimal performance and capabi
 
 #### Check Service Health
 ```bash
-curl http://localhost:8000/health/detailed \
-  -H "Authorization: Bearer your-client-key-123"
+curl http://localhost:80/health \
+  -H "Authorization: Bearer client15902"
 ```
 
 #### View Performance Metrics
 ```bash
-curl http://localhost:8000/metrics \
-  -H "Authorization: Bearer your-client-key-123"
+curl http://localhost:80/metrics \
+  -H "Authorization: Bearer client15902"
 ```
 
 #### Check Cache Performance
 ```bash
-curl http://localhost:8000/cache/stats \
-  -H "Authorization: Bearer your-client-key-123"
+curl http://localhost:80/cache/stats \
+  -H "Authorization: Bearer client15902"
 ```
 
 #### Reset a Failed Key
 ```bash
-curl -X POST http://localhost:8000/admin/reset-key/AIza \
-  -H "Authorization: Bearer your-admin-key-abc"
+curl -X POST http://localhost:80/admin/reset-key/AIza \
+  -H "Authorization: Bearer admin15902"
 ```
 
 #### Clear Cache
 ```bash
-curl -X POST http://localhost:8000/cache/clear \
-  -H "Authorization: Bearer your-admin-key-abc"
+curl -X POST http://localhost:80/cache/clear \
+  -H "Authorization: Bearer admin15902"
 ```
 
 ## 🐛 Troubleshooting
 
 ### Common Issues
 
--   **"Invalid API key"**: Ensure the key you are using is listed in `SECURITY_ADAPTER_API_KEYS` (or `SECURITY_ADMIN_API_KEYS` for admin endpoints) in your `.env` file. Restart the service after configuration changes.
+-   **"Invalid API key"**: Ensure the key you are using is listed in `ADAPTER_API_KEYS` (or `ADMIN_API_KEYS` for admin endpoints) in your `.env` file. Restart the service after configuration changes.
 
 -   **"Service Unavailable" or 502/503 Errors**: Usually indicates all Gemini API keys are in a "cooling" state. Check logs (`docker-compose logs -f`) for error details. Use the `/health/detailed` endpoint for comprehensive status.
 
--   **Connection Refused**: Verify Docker container is running (`docker-compose ps`). Check IP address, port, and firewall rules. Ensure port 8000 is accessible.
+-   **Connection Refused**: Verify Docker container is running (`docker-compose ps`). Check IP address, port, and firewall rules. Ensure port 80 is accessible.
 
 ### Performance Issues
 
@@ -411,20 +411,20 @@ curl -X POST http://localhost:8000/cache/clear \
 
 #### Check Detailed Service Health
 ```bash
-curl http://localhost:8000/health/detailed \
-  -H "Authorization: Bearer your-client-key-123"
+curl http://localhost:80/health \
+  -H "Authorization: Bearer client15902"
 ```
 
 #### View Performance Metrics
 ```bash
-curl http://localhost:8000/metrics \
-  -H "Authorization: Bearer your-client-key-123"
+curl http://localhost:80/metrics \
+  -H "Authorization: Bearer client15902"
 ```
 
 #### Check Recent Errors
 ```bash
-curl http://localhost:8000/errors/recent \
-  -H "Authorization: Bearer your-admin-key-abc"
+curl http://localhost:80/errors/recent \
+  -H "Authorization: Bearer admin15902"
 ```
 
 #### Monitor Real-time Logs
@@ -442,7 +442,7 @@ docker-compose up -d
 
 Verify configuration is loaded correctly by checking service info:
 ```bash
-curl http://localhost:8000/
+curl http://localhost:80/
 ```
 
 ---
@@ -475,7 +475,7 @@ gemini-claude/
 ## 🔒 Security Best Practices
 
 1. **Use Strong API Keys**: Generate with `openssl rand -hex 32`
-2. **Separate Admin Keys**: Set different keys for `SECURITY_ADMIN_API_KEYS`
+2. **Separate Admin Keys**: Set different keys for `ADMIN_API_KEYS`
 3. **Secure Your Server**: Use firewall rules to restrict access
 4. **Monitor Access**: Check logs regularly for unauthorized attempts
 5. **Keep Updated**: Pull updates regularly with `git pull && docker-compose up -d --build`
@@ -512,8 +512,8 @@ GEMINI_PROXY_URL=http://proxy.example.com:8080
 # =============================================
 # Security Configuration
 # =============================================
-SECURITY_ADAPTER_API_KEYS=your-client-key-123,your-client-key-456
-SECURITY_ADMIN_API_KEYS=your-admin-key-abc,your-admin-key-def
+ADAPTER_API_KEYS=client15902
+ADMIN_API_KEYS=admin15902
 SECURITY_ENABLE_IP_BLOCKING=true
 SECURITY_MAX_FAILED_ATTEMPTS=5
 SECURITY_BLOCK_DURATION=300

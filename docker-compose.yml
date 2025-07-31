@@ -1,7 +1,5 @@
 # docker-compose.yml
 
-version: '3.8'
-
 services:
   gemini-claude-adapter:
     # Build the image from the Dockerfile in the current directory.
