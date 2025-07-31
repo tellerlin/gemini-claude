@@ -1,16 +1,17 @@
-# Gemini Claude Adapter
+# Gemini Claude Adapter v2.0.0
 
-A high-performance, secure Gemini adapter designed for clients like Claude Code, featuring multi-API key rotation, automatic failover, robust security, and streaming support.
+A high-performance, secure Gemini adapter with **complete Anthropic API compatibility**, designed for Claude Code and other Anthropic clients. Features intelligent multi-API key rotation, automatic failover, robust security, and streaming support.
 
 [🇨🇳 中文版本](README.zh.md) | [🇺🇸 English Version](README.md)
 
 ## ✨ Key Features
 
--   🚀 **Ultra-fast Response**: Optimized request handling and smart key rotation.
+-   🤖 **Full Anthropic API Compatibility**: Complete support for Anthropic Messages API (`/v1/messages`) with proper streaming format
 -   🔑 **Smart Key Management**: Failed Gemini keys are immediately placed in a cool-down period, with automatic failover to the next available key.
 -   🛡️ **Robust Security**: Enforced API key authentication for all sensitive endpoints using client and admin keys.
--   🌐 **Full Compatibility**: Compatible with Claude Code (Anthropic API format) and clients that use the OpenAI API format.
--   ⚡ **Streaming Support**: Native support for streaming chat responses.
+-   🌐 **Dual API Support**: Compatible with both Anthropic and OpenAI API formats for maximum flexibility.
+-   ⚡ **Streaming Support**: Native support for Anthropic-style streaming responses with all required event types.
+-   🛠️ **Tool Calling Support**: Complete tool/function calling support between Anthropic and Gemini formats.
 -   📊 **Real-time Monitoring**: Endpoints for service health, key status, and usage statistics.
 -   🐳 **Simplified Docker Deployment**: Quick and secure setup using Docker and Docker Compose.
 
@@ -18,7 +19,7 @@ A high-performance, secure Gemini adapter designed for clients like Claude Code,
 
 This adapter enforces API key authentication to protect your service. There are two levels of access:
 
-1.  **Client Keys (`ADAPTER_API_KEYS`)**: For standard users. These keys grant access to core functionalities like chat completions (`/v1/chat/completions`) and listing models (`/v1/models`).
+1.  **Client Keys (`ADAPTER_API_KEYS`)**: For standard users. These keys grant access to core functionalities like Anthropic Messages API (`/v1/messages`), token counting (`/v1/messages/count_tokens`), and listing models (`/v1/models`).
 2.  **Admin Keys (`ADMIN_API_KEYS`)**: For administrators. These keys grant access to all endpoints, including protected management endpoints like resetting a Gemini key (`/admin/reset-key/{prefix}`).
 
 If `ADMIN_API_KEYS` are not set, the client keys will also have access to admin endpoints. For production environments, it is **highly recommended** to set separate admin keys.
@@ -107,6 +108,12 @@ Here are the essential Docker Compose commands for managing your service:
 -   **Check Logs**: `docker-compose logs -f`
 -   **Stop Service**: `docker-compose down`
 -   **Restart Service**: `docker-compose restart`
+
+The project includes optimized Docker configuration files (`docker-compose.yml` and `Dockerfile`) that handle:
+- Production-ready server setup with gunicorn + uvicorn
+- Security best practices (non-privileged user execution)
+- Log persistence through volume mounting
+- Automatic restart policies for high availability
 
 ## 🔄 Updating the Project
 
@@ -226,6 +233,18 @@ To connect Claude Code which uses the Anthropic API format, follow these steps:
     -   In the "API Key" field, enter one of the **client keys** you defined in `ADAPTER_API_KEYS`.
 5.  **Save and Test**: Save the settings and try a chat completion to confirm it's working.
 
+### Supported Models
+
+The adapter maps Anthropic model names to the latest Gemini models:
+
+- `claude-3-5-sonnet` → `gemini-2.5-pro`
+- `claude-3-5-haiku` → `gemini-2.5-flash`
+- `claude-3-opus` → `gemini-2.5-pro`
+- `claude-3-sonnet` → `gemini-2.5-pro`
+- `claude-3-haiku` → `gemini-2.5-flash`
+
+The adapter uses the latest Gemini 2.5 models for optimal performance and capabilities.
+
 ## 📡 API Endpoints
 
 ### Public Endpoints
@@ -237,8 +256,13 @@ To connect Claude Code which uses the Anthropic API format, follow these steps:
 ### Protected Endpoints
 *Requires a **Client API Key** (`X-API-Key` or `Bearer` token).*
 
--   `POST /v1/chat/completions`: The main endpoint for chat completions.
--   `GET /v1/models`: Lists the available Gemini models configured in the adapter.
+#### Anthropic Messages API (Primary)
+-   `POST /v1/messages`: **Primary endpoint** for Anthropic Messages API with complete compatibility.
+-   `POST /v1/messages/count_tokens`: Count tokens for messages before sending.
+-   `GET /v1/models`: Lists available Anthropic models (mapped to Gemini models).
+
+#### Legacy OpenAI-Compatible API (Backward Compatibility)
+-   `POST /v1/chat/completions`: Legacy OpenAI-compatible endpoint for backward compatibility.
 -   `GET /stats`: Returns detailed statistics about key usage, failures, and status.
 
 ### Admin Endpoints
@@ -275,7 +299,8 @@ curl -X POST http://localhost:8000/admin/reset-key/AIza \
 gemini-claude/
 ├── main.py                 # Development entry point
 ├── src/
-│   └── main.py            # FastAPI application (main server)
+│   ├── main.py            # FastAPI application (main server)
+│   └── anthropic_api.py   # Anthropic API compatibility layer
 ├── requirements.txt       # Python dependencies
 ├── .env.example          # Environment configuration template
 ├── docker-compose.yml    # Docker Compose configuration

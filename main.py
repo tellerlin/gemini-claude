@@ -2,6 +2,7 @@
 """
 Gemini Claude Adapter - Entry Point
 This script provides a simple way to run the adapter for development/testing.
+Now with full Anthropic API compatibility!
 """
 
 import os
@@ -11,8 +12,9 @@ from pathlib import Path
 
 def main():
     """Main entry point for development/testing"""
-    print("🚀 Gemini Claude Adapter")
-    print("=" * 40)
+    print("🚀 Gemini Claude Adapter v2.0.0")
+    print("🤖 Full Anthropic API Compatibility + Gemini Key Rotation")
+    print("=" * 60)
     
     # Check if we're in the right directory
     if not Path("src/main.py").exists():
@@ -40,8 +42,10 @@ def main():
     print("🔧 Starting development server...")
     print("📡 Server will be available at: http://localhost:8000")
     print("📖 API documentation at: http://localhost:8000/docs")
+    print("🎯 Anthropic Messages API: http://localhost:8000/v1/messages")
+    print("📊 Health check: http://localhost:8000/health")
     print("💡 Press Ctrl+C to stop the server")
-    print("=" * 40)
+    print("=" * 60)
     
     try:
         # Run uvicorn with the correct module path

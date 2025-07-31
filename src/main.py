@@ -4,6 +4,7 @@ import random
 from typing import List, Dict, Optional, Any, Union, Set
 from dataclasses import dataclass, field
 from enum import Enum
+from itertools import cycle
 import json
 import httpx
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Depends
@@ -17,6 +18,13 @@ import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
+
+# Import Anthropic API compatibility layer
+from .anthropic_api import (
+    MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
+    AnthropicToGeminiConverter, GeminiToAnthropicConverter, 
+    StreamingResponseGenerator, ToolConverter, log_request_beautifully
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -191,7 +199,7 @@ class GeminiKeyManager:
     def __init__(self, config: GeminiConfig):
         self.config = config
         self.keys: Dict[str, APIKeyInfo] = {}
-        self.current_key_index = 0
+        self.key_cycle = None
         self.lock = asyncio.Lock()
 
         for key in config.api_keys:
@@ -225,13 +233,24 @@ class GeminiKeyManager:
                 logger.warning("No available API keys.")
                 return None
 
-            # Simple round-robin with bounds checking
-            if self.current_key_index >= len(active_keys):
-                self.current_key_index = 0
+            # Initialize cycle if not exists or recreate if active keys changed
+            if self.key_cycle is None:
+                self.key_cycle = cycle(active_keys)
             
-            key_info = active_keys[self.current_key_index]
-            self.current_key_index = (self.current_key_index + 1) % len(active_keys)
-            return key_info
+            # Get next key from cycle, ensuring we don't return the same key consecutively
+            max_attempts = len(active_keys)
+            for attempt in range(max_attempts):
+                try:
+                    key_info = next(self.key_cycle)
+                    return key_info
+                except StopIteration:
+                    # Recreate cycle if exhausted
+                    self.key_cycle = cycle(active_keys)
+                    if attempt == max_attempts - 1:
+                        # Last attempt, return first key
+                        return active_keys[0] if active_keys else None
+            
+            return active_keys[0] if active_keys else None
 
     async def mark_key_failed(self, key: str, error: str):
         async with self.lock:
@@ -246,6 +265,9 @@ class GeminiKeyManager:
             key_info.last_failure_time = time.time()
             key_info.cooling_until = time.time() + self.config.cooling_period
             logger.warning(f"API key {key[:8]}... failed and is now cooling for {self.config.cooling_period} seconds. Error: {error}")
+            
+            # Reset cycle to avoid selecting failed key in next calls
+            self.key_cycle = None
 
     async def mark_key_success(self, key: str):
         async with self.lock:
@@ -306,6 +328,9 @@ class GeminiKeyManager:
             key_info.cooling_until = None
             key_info.last_failure_time = None
             
+            # Reset cycle to include the newly activated key
+            self.key_cycle = None
+            
             logger.info(f"Reset API key {matched_key[:8]}... from {old_status.value} to active status")
             return {"message": f"Successfully reset key {matched_key[:8]}... from {old_status.value} to active"}
 
@@ -313,6 +338,11 @@ class LiteLLMAdapter:
     def __init__(self, config: GeminiConfig, key_manager: GeminiKeyManager):
         self.config = config
         self.key_manager = key_manager
+        
+        # Initialize converters
+        self.anthropic_to_gemini = AnthropicToGeminiConverter()
+        self.gemini_to_anthropic = GeminiToAnthropicConverter()
+        self.tool_converter = ToolConverter()
         
         # Configure proxy if provided
         if config.proxy_url:
@@ -370,6 +400,39 @@ class LiteLLMAdapter:
             status_code=502, 
             detail=f"Failed to process request with all available keys. Last error: {last_error}"
         )
+    
+    async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
+        """Handle Anthropic Messages API requests"""
+        # Convert Anthropic request to Gemini format
+        gemini_request_dict = self.anthropic_to_gemini.convert_request(request)
+        
+        # Add tools if present
+        if request.tools:
+            gemini_tools = self.tool_converter.convert_tools_to_gemini(request.tools)
+            gemini_request_dict["tools"] = gemini_tools
+            
+            if request.tool_choice:
+                tool_config = self.tool_converter.convert_tool_choice_to_gemini(request.tool_choice)
+                gemini_request_dict["tool_config"] = {"function_calling_config": {"mode": tool_config}}
+        
+        # Create ChatRequest object
+        chat_request = ChatRequest(
+            messages=gemini_request_dict["messages"],
+            model=gemini_request_dict["model"].replace("gemini/", ""),
+            temperature=gemini_request_dict["temperature"],
+            max_tokens=gemini_request_dict.get("max_tokens"),
+            stream=gemini_request_dict["stream"]
+        )
+        
+        if request.stream:
+            # Handle streaming response
+            gemini_stream = await self.chat_completion(chat_request)
+            streaming_generator = StreamingResponseGenerator(request)
+            return streaming_generator.generate_sse_events(gemini_stream)
+        else:
+            # Handle regular response
+            gemini_response = await self.chat_completion(chat_request)
+            return self.gemini_to_anthropic.convert_response(gemini_response, request)
 
 # Global state
 key_manager: Optional[GeminiKeyManager] = None
@@ -433,7 +496,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Gemini Claude Code Adapter",
     description="An adapter for Claude Code to use Gemini API with key rotation and fault tolerance.",
-    version="1.3.0",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -472,6 +535,8 @@ async def root():
         "security_enabled": security_config.security_enabled,
         "endpoints": {
             "chat": "/v1/chat/completions",
+            "messages": "/v1/messages",
+            "messages_tokens": "/v1/messages/count_tokens",
             "models": "/v1/models",
             "health": "/health",
             "stats": "/stats",
@@ -497,7 +562,7 @@ async def health_check():
         return {
             "status": "healthy" if stats["active_keys"] > 0 else "degraded",
             "timestamp": datetime.now().isoformat(),
-            "service_version": "1.3.0",
+            "service_version": "2.0.0",
             "security_enabled": security_config.security_enabled,
             **stats
         }
@@ -505,14 +570,120 @@ async def health_check():
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=500, detail="Health check failed")
 
-# Protected endpoints (require authentication)
+# Anthropic Messages API endpoints (primary endpoint for Claude Code)
+@app.post("/v1/messages", dependencies=[Depends(verify_api_key)])
+async def create_message(
+    request: MessagesRequest,
+    raw_request: Request,
+    client_key: str = Depends(verify_api_key)
+):
+    """Create a message - Anthropic Messages API"""
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        # Get request details for logging
+        anthropic_model = request.model
+        gemini_model = adapter.anthropic_to_gemini.convert_model(anthropic_model)
+        num_messages = len(request.messages)
+        num_tools = len(request.tools) if request.tools else 0
+        
+        logger.info(f"Anthropic Messages API request from client: {client_key[:8] if client_key != 'insecure_mode' else 'insecure_mode'}...")
+        logger.info(f"Request model: {anthropic_model}, stream: {request.stream}")
+        
+        # Log the request beautifully
+        log_request_beautifully(
+            method="POST",
+            path=str(raw_request.url.path),
+            anthropic_model=anthropic_model,
+            gemini_model=gemini_model,
+            num_messages=num_messages,
+            num_tools=num_tools
+        )
+        
+        response = await adapter.anthropic_messages_completion(request)
+        
+        if request.stream:
+            return StreamingResponse(
+                response,
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, Anthropic-Version",
+                    "Anthropic-Version": "2023-06-01"
+                }
+            )
+        else:
+            return response
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in Anthropic Messages API: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.options("/v1/messages")
+async def options_messages():
+    """Handle OPTIONS requests for CORS preflight"""
+    return {"status": "ok"}
+
+@app.post("/v1/messages/count_tokens", dependencies=[Depends(verify_api_key)])
+async def count_tokens(
+    request: TokenCountRequest,
+    client_key: str = Depends(verify_api_key)
+):
+    """Count tokens for a message"""
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        logger.info(f"Token count request from client: {client_key[:8] if client_key != 'insecure_mode' else 'insecure_mode'}...")
+        
+        # Convert request for token counting
+        gemini_request_dict = adapter.anthropic_to_gemini.convert_request(
+            MessagesRequest(
+                model=request.model,
+                max_tokens=100,  # Arbitrary value for token counting
+                messages=request.messages,
+                system=request.system,
+                tools=request.tools,
+                tool_choice=request.tool_choice
+            )
+        )
+        
+        # Use LiteLLM's token counter
+        try:
+            from litellm import token_counter
+            token_count = token_counter(
+                model=gemini_request_dict["model"],
+                messages=gemini_request_dict["messages"]
+            )
+            return TokenCountResponse(input_tokens=token_count)
+        except ImportError:
+            logger.error("Could not import token_counter from litellm")
+            # Fallback estimation
+            text_content = ""
+            for msg in gemini_request_dict["messages"]:
+                if isinstance(msg.get("content"), str):
+                    text_content += msg["content"] + " "
+            estimated_tokens = len(text_content.split()) * 1.3  # Rough estimate
+            return TokenCountResponse(input_tokens=int(estimated_tokens))
+            
+    except Exception as e:
+        logger.error(f"Error counting tokens: {e}")
+        raise HTTPException(status_code=500, detail="Token counting failed")
+
+# Legacy OpenAI-compatible endpoint (maintained for backward compatibility)
 @app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
 async def chat_completions(request: ChatRequest, client_key: str = Depends(verify_api_key)):
     if not adapter:
         raise HTTPException(status_code=503, detail="Service not initialized")
     
     try:
-        logger.info(f"Chat completion request from client: {client_key[:8] if client_key != 'insecure_mode' else 'insecure_mode'}...")
+        logger.info(f"Legacy chat completion request from client: {client_key[:8] if client_key != 'insecure_mode' else 'insecure_mode'}...")
         response = await adapter.chat_completion(request)
         if request.stream:
             return StreamingResponse(
@@ -559,22 +730,34 @@ async def get_models(client_key: str = Depends(verify_api_key)):
         "object": "list",
         "data": [
             {
-                "id": "gemini-2.5-pro",
+                "id": "claude-3-5-sonnet",
                 "object": "model",
                 "created": int(time.time()),
-                "owned_by": "google"
+                "owned_by": "anthropic"
             },
             {
-                "id": "gemini-1.5-pro-latest",
-                "object": "model",
+                "id": "claude-3-5-haiku",
+                "object": "model", 
                 "created": int(time.time()),
-                "owned_by": "google"
+                "owned_by": "anthropic"
             },
             {
-                "id": "gemini-1.5-flash-latest",
+                "id": "claude-3-opus",
                 "object": "model",
                 "created": int(time.time()),
-                "owned_by": "google"
+                "owned_by": "anthropic"
+            },
+            {
+                "id": "claude-3-sonnet",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "anthropic"
+            },
+            {
+                "id": "claude-3-haiku",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "anthropic"
             }
         ]
     }
