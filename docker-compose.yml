@@ -1,5 +1,7 @@
 # docker-compose.yml
 
+version: '3.8'
+
 services:
   gemini-claude-adapter:
     # Build the image from the Dockerfile in the current directory.
@@ -9,9 +11,9 @@ services:
     # Always restart the container if it stops, ensuring service availability.
     restart: always
     ports:
-      # Map port 8000 on the host to port 8000 in the container.
-      # You can change the host port, e.g., "80:8000" to use the standard HTTP port.
-      - "8000:8000"
+      # Map port 80 on the host to port 8000 in the container.
+      # This provides external access on the standard HTTP port while the service runs on port 8000 internally.
+      - "80:8000"
     # Load environment variables from the .env file in the same directory.
     # This is the recommended way to handle secrets and configuration.
     env_file:

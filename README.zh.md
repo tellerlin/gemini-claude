@@ -92,7 +92,7 @@ curl http://localhost:80/v1/models \
 # 必需：Gemini API 配置
 # =============================================
 # 从以下获取您的 API 密钥：https://makersuite.google.com/app/apikey
-GEMINI_API_KEYS=AIzaSyBt3JTEUjrNFb392jP-2...,AIzaSyBsfnqmf7hCNA8….,AIzaSyB_ic4AmBCWeFGnhV4W...
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
 
 # =============================================
 # 必需：安全配置
@@ -109,9 +109,9 @@ ADMIN_API_KEYS=your-admin-key
 # =============================================
 # 可选：服务配置
 # =============================================
-CACHE_ENABLED=true
-PERF_HTTP2_ENABLED=true
-SERVICE_ENABLE_METRICS=true
+SERVICE_HOST=0.0.0.0
+SERVICE_PORT=8000
+SERVICE_LOG_LEVEL=INFO
 ```
 
 **⚠️ 重要安全说明：**
@@ -231,7 +231,7 @@ docker-compose up -d
 
 ```bash
 # 多个 Gemini 密钥
-GEMINI_API_KEYS=AIzaSyBt3JTEUjrNFb392jP-2...,AIzaSyBsfnqmf7hCNA8….,AIzaSyB_ic4AmBCWeFGnhV4W...
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
 
 # 多个客户端密钥
 ADAPTER_API_KEYS=your-client-key
@@ -253,7 +253,7 @@ PROXY_URL=http://proxy.example.com:8080
     -   在"API Base URL"或"Endpoint"字段中，输入您的适配器 URL：
         `http://<your-vps-ip>:80/v1`
 4.  **设置 API 密钥**：
-    -   在"API Key"字段中，输入您在 `ADAPTER_API_KEYS` 中定义的**客户端密钥**。
+    -   在"API Key"字段中，输入您在 `ADAPTER_API_KEYS` 中定义的**客户端密钥**之一。
 5.  **保存并测试**：保存设置并尝试聊天完成以确认工作正常。
 
 ## 📡 API 端点
@@ -303,7 +303,7 @@ curl -X POST http://localhost:80/admin/reset-key/AIza \
 
 -   **"Invalid API key"**：确保您在客户端中使用的密钥列在 `.env` 文件的 `ADAPTER_API_KEYS`（或管理员端点的 `ADMIN_API_KEYS`）中。请记住在更改 `.env` 文件后重启服务（`docker-compose restart`）。
 -   **"Service Unavailable" 或 502/503 错误**：这通常意味着您的所有 Gemini API 密钥都处于"冷却"状态。检查日志（`docker-compose logs -f`）以查看错误。您还可以检查 `/health` 端点获取状态，或使用 `/stats` 端点查看每个密钥的状态。
--   **连接被拒绝**：验证 Docker 容器是否正在运行（`docker-compose ps`）。检查您是否使用了正确的服务器 IP 地址和端口。如果在云提供商上运行，确保防火墙规则允许端口 8000 上的流量。
+-   **连接被拒绝**：验证 Docker 容器是否正在运行（`docker-compose ps`）。检查您是否使用了正确的服务器 IP 地址和端口。如果在云提供商上运行，确保防火墙规则允许端口 80 上的流量。
 
 ---
 

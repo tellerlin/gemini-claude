@@ -87,7 +87,7 @@ curl http://localhost:80/health
 
 # Test with your API key
 curl http://localhost:80/v1/models \
-  -H "Authorization: Bearer client15902"
+  -H "Authorization: Bearer your-client-key"
 ```
 
 ## ⚙️ Essential Configuration
@@ -99,26 +99,26 @@ Edit your `.env` file with these **required** settings:
 # REQUIRED: Gemini API Configuration
 # =============================================
 # Get your API keys from: https://makersuite.google.com/app/apikey
-GEMINI_API_KEYS=AIzaSyBt3JTEUjrNFb392jP-2...,AIzaSyBsfnqmf7hCNA8….,AIzaSyB_ic4AmBCWeFGnhV4W...
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
 
 # =============================================
 # REQUIRED: Security Configuration
 # =============================================
 # Generate strong keys: openssl rand -hex 32
-ADAPTER_API_KEYS=client15902
+ADAPTER_API_KEYS=your-client-key
 
 # =============================================
 # OPTIONAL: Admin Access
 # =============================================
 # Optional admin keys for management endpoints
-ADMIN_API_KEYS=admin15902
+ADMIN_API_KEYS=your-admin-key
 
 # =============================================
 # OPTIONAL: Service Configuration
 # =============================================
-CACHE_ENABLED=true
-PERF_HTTP2_ENABLED=true
-SERVICE_ENABLE_METRICS=true
+SERVICE_HOST=0.0.0.0
+SERVICE_PORT=8000
+SERVICE_LOG_LEVEL=INFO
 ```
 
 **⚠️ Important Security Notes:**
@@ -289,13 +289,13 @@ docker-compose up -d
 
 ```bash
 # Multiple Gemini API keys
-GEMINI_API_KEYS=AIzaSyBt3JTEUjrNFb392jP-2...,AIzaSyBsfnqmf7hCNA8….,AIzaSyB_ic4AmBCWeFGnhV4W...
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
 
 # Client authentication keys
-ADAPTER_API_KEYS=client15902
+ADAPTER_API_KEYS=your-client-key
 
 # Admin authentication keys (optional)
-ADMIN_API_KEYS=admin15902
+ADMIN_API_KEYS=your-admin-key
 
 # Performance optimization settings
 CACHE_ENABLED=true
@@ -313,7 +313,7 @@ To connect Claude Code which uses the Anthropic API format, follow these steps:
     -   In the "API Base URL" or "Endpoint" field, enter the URL of your adapter:
         `http://<your-vps-ip>:80/v1`
 4.  **Set the API Key**:
-    -   In the "API Key" field, enter the **client key** you defined in `ADAPTER_API_KEYS` (e.g., `client15902`).
+    -   In the "API Key" field, enter the **client key** you defined in `ADAPTER_API_KEYS` (e.g., `your-client-key`).
 5.  **Save and Test**: Save the settings and try a chat completion to confirm it's working.
 
 ### Supported Models
@@ -362,31 +362,31 @@ The adapter uses the latest Gemini 2.5 models for optimal performance and capabi
 #### Check Service Health
 ```bash
 curl http://localhost:80/health \
-  -H "Authorization: Bearer client15902"
+  -H "Authorization: Bearer your-client-key"
 ```
 
 #### View Performance Metrics
 ```bash
 curl http://localhost:80/metrics \
-  -H "Authorization: Bearer client15902"
+  -H "Authorization: Bearer your-client-key"
 ```
 
 #### Check Cache Performance
 ```bash
 curl http://localhost:80/cache/stats \
-  -H "Authorization: Bearer client15902"
+  -H "Authorization: Bearer your-client-key"
 ```
 
 #### Reset a Failed Key
 ```bash
 curl -X POST http://localhost:80/admin/reset-key/AIza \
-  -H "Authorization: Bearer admin15902"
+  -H "Authorization: Bearer your-admin-key"
 ```
 
 #### Clear Cache
 ```bash
 curl -X POST http://localhost:80/cache/clear \
-  -H "Authorization: Bearer admin15902"
+  -H "Authorization: Bearer your-admin-key"
 ```
 
 ## 🐛 Troubleshooting
@@ -412,19 +412,19 @@ curl -X POST http://localhost:80/cache/clear \
 #### Check Detailed Service Health
 ```bash
 curl http://localhost:80/health \
-  -H "Authorization: Bearer client15902"
+  -H "Authorization: Bearer your-client-key"
 ```
 
 #### View Performance Metrics
 ```bash
 curl http://localhost:80/metrics \
-  -H "Authorization: Bearer client15902"
+  -H "Authorization: Bearer your-client-key"
 ```
 
 #### Check Recent Errors
 ```bash
 curl http://localhost:80/errors/recent \
-  -H "Authorization: Bearer admin15902"
+  -H "Authorization: Bearer your-admin-key"
 ```
 
 #### Monitor Real-time Logs
@@ -512,8 +512,8 @@ GEMINI_PROXY_URL=http://proxy.example.com:8080
 # =============================================
 # Security Configuration
 # =============================================
-ADAPTER_API_KEYS=client15902
-ADMIN_API_KEYS=admin15902
+ADAPTER_API_KEYS=your-client-key
+ADMIN_API_KEYS=your-admin-key
 SECURITY_ENABLE_IP_BLOCKING=true
 SECURITY_MAX_FAILED_ATTEMPTS=5
 SECURITY_BLOCK_DURATION=300
