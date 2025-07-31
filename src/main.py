@@ -1,14 +1,14 @@
 import asyncio
 import time
 import random
-from typing import List, Dict, Optional, Any, Union, Set
+from typing import List, Dict, Optional, Any, Union, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 from itertools import cycle
 import json
 import httpx
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, validator
 from loguru import logger
@@ -18,6 +18,7 @@ import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
+from collections import defaultdict, deque
 
 # Import Anthropic API compatibility layer
 from .anthropic_api import (
@@ -201,6 +202,7 @@ class GeminiKeyManager:
         self.keys: Dict[str, APIKeyInfo] = {}
         self.key_cycle = None
         self.lock = asyncio.Lock()
+        self.last_key_used = None  # 添加这个属性来避免连续使用同一个key
 
         for key in config.api_keys:
             if key and key.strip():
@@ -213,44 +215,55 @@ class GeminiKeyManager:
 
     async def get_available_key(self) -> Optional[APIKeyInfo]:
         async with self.lock:
-            current_time = time.time()
-            active_keys = []
-
-            # Check for keys that can be reactivated
-            for key_info in self.keys.values():
-                if (key_info.status == KeyStatus.COOLING and 
-                    key_info.cooling_until and 
-                    current_time > key_info.cooling_until):
-                    key_info.status = KeyStatus.ACTIVE
-                    key_info.failure_count = 0
-                    key_info.cooling_until = None
-                    logger.info(f"API key {key_info.key[:8]}... has cooled down and is now active.")
-                
-                if key_info.status == KeyStatus.ACTIVE:
-                    active_keys.append(key_info)
+            # 检查是否有可以恢复的keys
+            recovered_count = await self._check_and_recover_keys_internal()
+            if recovered_count > 0:
+                logger.info(f"Recovered {recovered_count} keys during get_available_key")
+            
+            active_keys = [k for k in self.keys.values() if k.status == KeyStatus.ACTIVE]
             
             if not active_keys:
                 logger.warning("No available API keys.")
                 return None
 
-            # Initialize cycle if not exists or recreate if active keys changed
-            if self.key_cycle is None:
-                self.key_cycle = cycle(active_keys)
+            # 智能选择key，避免连续使用同一个key
+            if len(active_keys) > 1 and self.last_key_used:
+                available_keys = [k for k in active_keys if k.key != self.last_key_used]
+                if available_keys:
+                    # 选择成功率最高的key
+                    selected_key = max(available_keys, key=lambda k: k.successful_requests / max(k.total_requests, 1))
+                else:
+                    selected_key = active_keys[0]
+            else:
+                # 选择成功率最高的key
+                selected_key = max(active_keys, key=lambda k: k.successful_requests / max(k.total_requests, 1))
             
-            # Get next key from cycle, ensuring we don't return the same key consecutively
-            max_attempts = len(active_keys)
-            for attempt in range(max_attempts):
-                try:
-                    key_info = next(self.key_cycle)
-                    return key_info
-                except StopIteration:
-                    # Recreate cycle if exhausted
-                    self.key_cycle = cycle(active_keys)
-                    if attempt == max_attempts - 1:
-                        # Last attempt, return first key
-                        return active_keys[0] if active_keys else None
-            
-            return active_keys[0] if active_keys else None
+            self.last_key_used = selected_key.key
+            return selected_key
+    
+    async def _check_and_recover_keys_internal(self) -> int:
+        """内部方法：检查并恢复冷却中的keys，返回恢复的key数量"""
+        current_time = time.time()
+        recovered_count = 0
+        
+        for key_info in self.keys.values():
+            if (key_info.status == KeyStatus.COOLING and 
+                key_info.cooling_until and 
+                current_time > key_info.cooling_until):
+                
+                old_status = key_info.status
+                key_info.status = KeyStatus.ACTIVE
+                key_info.failure_count = 0
+                key_info.cooling_until = None
+                recovered_count += 1
+                
+                logger.info(f"API key {key_info.key[:8]}... has cooled down and recovered from {old_status.value} to active")
+        
+        # 如果有key被恢复，重置cycle
+        if recovered_count > 0:
+            self.key_cycle = None
+        
+        return recovered_count
 
     async def mark_key_failed(self, key: str, error: str):
         async with self.lock:
@@ -259,15 +272,87 @@ class GeminiKeyManager:
                 logger.warning(f"Attempted to mark unknown key as failed: {key[:8]}...")
                 return
 
-            # Immediately put key in cooling on first failure
+            # Enhanced error classification system
+            error_type, cooling_time = self._classify_error(error)
+            
+            if error_type == 'PERMANENT':
+                key_info.status = KeyStatus.FAILED
+                logger.error(f"API key {key[:8]}... permanently failed due to {error_type}: {error}")
+                return
+            
             key_info.status = KeyStatus.COOLING
             key_info.failure_count += 1
             key_info.last_failure_time = time.time()
-            key_info.cooling_until = time.time() + self.config.cooling_period
-            logger.warning(f"API key {key[:8]}... failed and is now cooling for {self.config.cooling_period} seconds. Error: {error}")
-            
-            # Reset cycle to avoid selecting failed key in next calls
-            self.key_cycle = None
+            key_info.cooling_until = time.time() + cooling_time
+            logger.warning(f"API key {key[:8]}... failed ({error_type}), cooling for {cooling_time}s. Error: {error}")
+    
+    def _classify_error(self, error: str) -> Tuple[str, int]:
+        """
+        Classify error type and determine appropriate cooling time
+        Returns: (error_type, cooling_time_seconds)
+        """
+        import re
+        
+        error_lower = error.lower()
+        
+        # Extract HTTP status code from error message if available
+        status_code = 0
+        status_patterns = [
+            r'status code (\d{3})',
+            r'HTTP (\d{3})',
+            r'Error (\d{3})',
+            r'(\d{3})'
+        ]
+        
+        for pattern in status_patterns:
+            match = re.search(pattern, error)
+            if match:
+                status_code = int(match.group(1))
+                break
+        
+        # PERMANENT FAILURES - Key should be disabled permanently
+        permanent_patterns = [
+            'invalid api key', 'api key not found', 'api key disabled',
+            'account disabled', 'account suspended', 'account terminated',
+            'unauthorized', 'authentication failed', 'access denied',
+            'billing disabled', 'payment required', 'payment failed',
+            'quota exceeded permanently', 'api key revoked',
+            'project not found', 'project deleted', 'service disabled',
+            'forbidden', 'permission denied'
+        ]
+        
+        # HTTP status codes that indicate permanent failures
+        permanent_status_codes = [401, 402, 403, 404]
+        
+        if any(pattern in error_lower for pattern in permanent_patterns) or status_code in permanent_status_codes:
+            return 'PERMANENT', -1  # -1 means permanent disable
+        
+        # EXTENDED COOLING - Quota/billing related but potentially recoverable
+        extended_patterns = [
+            'quota', 'rate limit', 'rate_limit', 'too many requests',
+            'resource exhausted', 'limit exceeded', 'usage limit',
+            'billing quota', 'daily limit', 'monthly limit'
+        ]
+        
+        if any(pattern in error_lower for pattern in extended_patterns) or status_code == 429:
+            return 'EXTENDED_COOLING', 1800  # 30 minutes
+        
+        # SERVER ERRORS - Google's side issues
+        if status_code >= 500:
+            return 'SERVER_ERROR', 300  # 5 minutes
+        
+        # NETWORK/TIMEOUT ERRORS
+        timeout_patterns = [
+            'timeout', 'connection', 'network', 'dns', 'unreachable',
+            'read timeout', 'connect timeout', 'request timeout',
+            'connection reset', 'connection refused'
+        ]
+        
+        if any(pattern in error_lower for pattern in timeout_patterns):
+            return 'NETWORK_ERROR', 600  # 10 minutes
+        
+        # DEFAULT - Standard cooling
+        return 'DEFAULT', 300  # 5 minutes
 
     async def mark_key_success(self, key: str):
         async with self.lock:
@@ -305,6 +390,11 @@ class GeminiKeyManager:
                 ],
             }
 
+    async def _check_and_recover_keys(self) -> int:
+        """检查并恢复冷却中的keys，返回恢复的key数量"""
+        async with self.lock:
+            return await self._check_and_recover_keys_internal()
+    
     async def reset_key(self, key_prefix: str) -> Dict[str, Any]:
         """Reset a key's status by key prefix"""
         async with self.lock:
@@ -333,6 +423,39 @@ class GeminiKeyManager:
             
             logger.info(f"Reset API key {matched_key[:8]}... from {old_status.value} to active status")
             return {"message": f"Successfully reset key {matched_key[:8]}... from {old_status.value} to active"}
+    
+    async def attempt_key_recovery(self, key_prefix: str) -> Dict[str, Any]:
+        """Attempt to recover a permanently failed key"""
+        async with self.lock:
+            if len(key_prefix) < 4:
+                return {"error": "Key prefix must be at least 4 characters long"}
+            
+            matched_keys = [key for key in self.keys.keys() if key.startswith(key_prefix)]
+            
+            if not matched_keys:
+                return {"error": f"No key found with prefix '{key_prefix}'"}
+            
+            if len(matched_keys) > 1:
+                return {"error": f"Multiple keys found with prefix '{key_prefix}'. Please use a more specific prefix."}
+            
+            matched_key = matched_keys[0]
+            key_info = self.keys[matched_key]
+            
+            # Only attempt recovery for failed keys
+            if key_info.status != KeyStatus.FAILED:
+                return {"error": f"Key {matched_key[:8]}... is not in FAILED status (current: {key_info.status.value})"}
+            
+            old_status = key_info.status
+            key_info.status = KeyStatus.ACTIVE
+            key_info.failure_count = 0
+            key_info.cooling_until = None
+            key_info.last_failure_time = None
+            
+            # Reset cycle to include the recovered key
+            self.key_cycle = None
+            
+            logger.info(f"Recovered API key {matched_key[:8]}... from {old_status.value} to active status")
+            return {"message": f"Successfully recovered key {matched_key[:8]}... from {old_status.value} to active"}
 
 class LiteLLMAdapter:
     def __init__(self, config: GeminiConfig, key_manager: GeminiKeyManager):
@@ -357,14 +480,18 @@ class LiteLLMAdapter:
         litellm.drop_params = True  # Drop unsupported parameters for better compatibility
 
     async def chat_completion(self, request: ChatRequest) -> Union[Dict, Any]:
-        # Try each available key once, no retries for the same key
-        for attempt in range(len(self.key_manager.keys) + 1):
+        last_error = None
+        attempted_keys = set()
+        
+        # 最多尝试所有可用的key
+        max_attempts = len(self.key_manager.keys)
+        
+        for attempt in range(max_attempts):
             key_info = await self.key_manager.get_available_key()
-            if not key_info:
-                raise HTTPException(
-                    status_code=503, 
-                    detail="All API keys are currently unavailable. Please try again later."
-                )
+            if not key_info or key_info.key in attempted_keys:
+                break
+                
+            attempted_keys.add(key_info.key)
             
             try:
                 # Increment total requests counter
@@ -377,29 +504,37 @@ class LiteLLMAdapter:
                     "api_key": key_info.key,
                     "temperature": request.temperature,
                     "stream": request.stream,
+                    "timeout": self.config.request_timeout,  # 显式设置超时
                 }
                 
                 if request.max_tokens:
                     kwargs["max_tokens"] = request.max_tokens
                 
-                logger.info(f"Attempting request with key {key_info.key[:8]}...")
+                logger.info(f"Attempting request with key {key_info.key[:8]}... (attempt {attempt + 1}/{max_attempts})")
                 
-                response = await litellm.acompletion(**kwargs)
+                # 使用 asyncio.wait_for 添加额外的超时保护
+                response = await asyncio.wait_for(
+                    litellm.acompletion(**kwargs),
+                    timeout=self.config.request_timeout + 5  # 比litellm的超时多5秒
+                )
                 
                 await self.key_manager.mark_key_success(key_info.key)
                 logger.info(f"Request successful with key {key_info.key[:8]}...")
                 return response
 
+            except asyncio.TimeoutError:
+                last_error = "Request timeout"
+                await self.key_manager.mark_key_failed(key_info.key, last_error)
+                logger.warning(f"Key {key_info.key[:8]}... timed out, trying next key...")
             except Exception as e:
                 last_error = str(e)
                 await self.key_manager.mark_key_failed(key_info.key, last_error)
-                logger.warning(f"Key {key_info.key[:8]}... failed, trying next key...")
+                logger.warning(f"Key {key_info.key[:8]}... failed: {last_error}, trying next key...")
         
-        # All keys exhausted
-        raise HTTPException(
-            status_code=502, 
-            detail=f"Failed to process request with all available keys. Last error: {last_error}"
-        )
+        # 所有key都失败了
+        error_msg = f"Failed to process request with all available keys. Last error: {last_error}"
+        logger.error(error_msg)
+        raise HTTPException(status_code=502, detail=error_msg)
     
     async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
         """Handle Anthropic Messages API requests"""
@@ -438,11 +573,105 @@ class LiteLLMAdapter:
 key_manager: Optional[GeminiKeyManager] = None
 adapter: Optional[LiteLLMAdapter] = None
 
+# 添加请求限流中间件
+class RateLimiter:
+    def __init__(self, max_requests: int = 100, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = defaultdict(deque)
+    
+    def is_allowed(self, client_id: str) -> bool:
+        now = time.time()
+        client_requests = self.requests[client_id]
+        
+        # 清理过期的请求记录
+        while client_requests and client_requests[0] < now - self.window_seconds:
+            client_requests.popleft()
+        
+        # 检查是否超过限制
+        if len(client_requests) >= self.max_requests:
+            return False
+        
+        # 记录新请求
+        client_requests.append(now)
+        return True
+
+# 创建全局限流器实例
+rate_limiter = RateLimiter(max_requests=100, window_seconds=60)
+
+# 在需要限流的endpoint上添加依赖
+async def check_rate_limit(client_key: str = Depends(verify_api_key)):
+    if not rate_limiter.is_allowed(client_key):
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded. Please try again later.",
+            headers={"Retry-After": "60"}
+        )
+    return client_key
+
+# 条件触发的key恢复检查任务
+async def health_check_task():
+    """条件触发检查API keys的健康状态"""
+    while True:
+        if key_manager:
+            try:
+                stats = await key_manager.get_stats()
+                total_keys = stats.get("total_keys", 0)
+                active_keys = stats.get("active_keys", 0)
+                cooling_keys = stats.get("cooling_keys", 0)
+                
+                # 检查是否需要触发key恢复检查
+                should_check = False
+                check_reason = ""
+                
+                # 条件1: 可用key数量少于3个
+                if active_keys < 3:
+                    should_check = True
+                    check_reason = f"Low active keys: {active_keys} < 3"
+                
+                # 条件2: 可用key数量少于总数的10%
+                elif total_keys > 0 and (active_keys / total_keys) < 0.1:
+                    should_check = True
+                    check_reason = f"Low active key ratio: {active_keys}/{total_keys} ({active_keys/total_keys*100:.1f}%)"
+                
+                # 条件3: 有冷却中的key且距离上次检查超过5分钟
+                elif cooling_keys > 0:
+                    current_time = time.time()
+                    last_check_time = getattr(key_manager, 'last_recovery_check', 0)
+                    if current_time - last_check_time > 300:  # 5分钟
+                        should_check = True
+                        check_reason = f"Cooling keys present ({cooling_keys}) and check interval reached"
+                
+                if should_check:
+                    logger.info(f"Triggering key recovery check: {check_reason}")
+                    
+                    # 手动触发一次key状态检查
+                    await key_manager._check_and_recover_keys()
+                    
+                    # 更新检查时间
+                    key_manager.last_recovery_check = time.time()
+                    
+                    # 获取更新后的统计信息
+                    new_stats = await key_manager.get_stats()
+                    recovered_keys = new_stats.get("active_keys", 0) - active_keys
+                    
+                    if recovered_keys > 0:
+                        logger.info(f"Key recovery successful: {recovered_keys} keys recovered")
+                    else:
+                        logger.info(f"No keys recovered in this check")
+                
+            except Exception as e:
+                logger.error(f"Health check error: {e}")
+        
+        # 降低检查频率，每30秒检查一次条件
+        await asyncio.sleep(30)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global key_manager, adapter
     
     try:
+        # 原有的初始化代码...
         # Load and validate environment variables
         api_keys_str = os.getenv("GEMINI_API_KEYS", "")
         if not api_keys_str:
@@ -477,6 +706,10 @@ async def lifespan(app: FastAPI):
         
         key_manager = GeminiKeyManager(config)
         adapter = LiteLLMAdapter(config, key_manager)
+        
+        # 启动健康检查任务
+        health_task = asyncio.create_task(health_check_task())
+        
         logger.info("Gemini Claude Adapter started successfully.")
         
         # Log security status
@@ -491,6 +724,13 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to start application: {e}")
         raise
     finally:
+        # 取消健康检查任务
+        if 'health_task' in locals():
+            health_task.cancel()
+            try:
+                await health_task
+            except asyncio.CancelledError:
+                pass
         logger.info("Gemini Claude Adapter shutting down.")
 
 app = FastAPI(
@@ -540,7 +780,7 @@ async def root():
             "models": "/v1/models",
             "health": "/health",
             "stats": "/stats",
-            "admin": "/admin/reset-key/{key_prefix}"
+            "admin": "/admin/reset-key/{key_prefix}, /admin/recover-key/{key_prefix}"
         },
         "authentication": {
             "required": security_config.security_enabled,
@@ -570,8 +810,8 @@ async def health_check():
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=500, detail="Health check failed")
 
-# Anthropic Messages API endpoints (primary endpoint for Claude Code)
-@app.post("/v1/messages", dependencies=[Depends(verify_api_key)])
+# 修改主要endpoint以包含限流
+@app.post("/v1/messages", dependencies=[Depends(check_rate_limit)])
 async def create_message(
     request: MessagesRequest,
     raw_request: Request,
@@ -781,6 +1021,74 @@ async def reset_key(key_prefix: str, admin_key: str = Depends(verify_admin_key))
         logger.error(f"Key reset failed: {e}")
         raise HTTPException(status_code=500, detail="Key reset failed")
 
+@app.post("/admin/recover-key/{key_prefix}", dependencies=[Depends(verify_admin_key)])
+async def recover_key(key_prefix: str, admin_key: str = Depends(verify_admin_key)):
+    """Attempt to recover a permanently failed key - requires admin authentication"""
+    if not key_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        logger.info(f"Admin key recovery requested by: {admin_key[:8] if admin_key != 'insecure_mode' else 'insecure_mode'}...")
+        result = await key_manager.attempt_key_recovery(key_prefix)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Key recovery failed: {e}")
+        raise HTTPException(status_code=500, detail="Key recovery failed")
+
+# 添加更详细的错误处理和日志记录
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """全局异常处理器"""
+    logger.error(f"Unhandled exception: {type(exc).__name__}: {str(exc)}")
+    logger.error(f"Request: {request.method} {request.url}")
+    
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"message": exc.detail, "type": "http_exception"}}
+        )
+    
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"message": "Internal server error", "type": "internal_error"}}
+    )
+
+# 添加更好的监控endpoint
+@app.get("/metrics", dependencies=[Depends(verify_api_key)])
+async def get_metrics(client_key: str = Depends(verify_api_key)):
+    """获取详细的服务监控指标"""
+    if not key_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        stats = await key_manager.get_stats()
+        
+        # 计算额外的指标
+        total_requests = sum(k.total_requests for k in key_manager.keys.values())
+        total_successes = sum(k.successful_requests for k in key_manager.keys.values())
+        overall_success_rate = (total_successes / total_requests * 100) if total_requests > 0 else 0
+        
+        return {
+            **stats,
+            "overall_success_rate": round(overall_success_rate, 2),
+            "total_requests": total_requests,
+            "total_successes": total_successes,
+            "service_uptime": time.time() - app.state.start_time if hasattr(app.state, 'start_time') else 0,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Metrics retrieval failed: {e}")
+        raise HTTPException(status_code=500, detail="Metrics retrieval failed")
+
+# 在应用启动时记录启动时间
+@app.on_event("startup")
+async def startup_event():
+    app.state.start_time = time.time()
+
 @app.get("/admin/security-status", dependencies=[Depends(verify_admin_key)])
 async def get_security_status(admin_key: str = Depends(verify_admin_key)):
     """Get security configuration status - admin only"""
@@ -790,7 +1098,7 @@ async def get_security_status(admin_key: str = Depends(verify_admin_key)):
         "admin_keys_count": len(security_config.admin_keys),
         "has_admin_keys": bool(security_config.admin_keys),
         "authentication_methods": ["X-API-Key header", "Authorization Bearer token"],
-        "admin_endpoints": ["/admin/reset-key/{key_prefix}", "/admin/security-status"]
+        "admin_endpoints": ["/admin/reset-key/{key_prefix}", "/admin/recover-key/{key_prefix}", "/admin/security-status"]
     }
 
 if __name__ == "__main__":
