@@ -1,95 +1,131 @@
-# Gemini Claude Adapter v2.0.0
+# Gemini Claude Adapter v2.1.0
 
-A high-performance, secure Gemini adapter with **complete Anthropic API compatibility**, designed for Claude Code and other Anthropic clients. Features intelligent multi-API key rotation, automatic failover, robust security, and streaming support.
+A high-performance, secure Gemini adapter with **complete Anthropic API compatibility**, designed for Claude Code and other Anthropic clients. Features intelligent multi-API key rotation, automatic failover, robust security, streaming support, and advanced optimizations.
 
 [🇨🇳 中文版本](README.zh.md) | [🇺🇸 English Version](README.md)
 
 ## ✨ Key Features
 
 -   🤖 **Full Anthropic API Compatibility**: Complete support for Anthropic Messages API (`/v1/messages`) with proper streaming format
--   🔑 **Smart Key Management**: Failed Gemini keys are immediately placed in a cool-down period, with automatic failover to the next available key.
--   🛡️ **Robust Security**: Enforced API key authentication for all sensitive endpoints using client and admin keys.
--   🌐 **Dual API Support**: Compatible with both Anthropic and OpenAI API formats for maximum flexibility.
--   ⚡ **Streaming Support**: Native support for Anthropic-style streaming responses with all required event types.
--   🛠️ **Tool Calling Support**: Complete tool/function calling support between Anthropic and Gemini formats.
--   📊 **Real-time Monitoring**: Endpoints for service health, key status, and usage statistics.
--   🐳 **Simplified Docker Deployment**: Quick and secure setup using Docker and Docker Compose.
+-   🔑 **Smart Key Management**: Failed Gemini keys are immediately placed in a cool-down period, with automatic failover to the next available key
+-   🛡️ **Robust Security**: Enforced API key authentication for all sensitive endpoints using client and admin keys
+-   🌐 **Dual API Support**: Compatible with both Anthropic and OpenAI API formats for maximum flexibility
+-   ⚡ **Streaming Support**: Native support for Anthropic-style streaming responses with all required event types
+-   🛠️ **Tool Calling Support**: Complete tool/function calling support between Anthropic and Gemini formats
+-   📊 **Real-time Monitoring**: Endpoints for service health, key status, and usage statistics
+-   🐳 **Simplified Docker Deployment**: Quick and secure setup using Docker and Docker Compose
+
+### 🚀 New in v2.1.0
+
+-   **Performance Optimizations**: Intelligent response caching and HTTP connection pooling
+-   **Enhanced Error Handling**: Smart error classification and circuit breaker patterns
+-   **Advanced Monitoring**: Comprehensive metrics collection and performance tracking
+-   **Structured Configuration**: Hierarchical configuration system with environment support
+-   **Improved Reliability**: Better fault tolerance and automatic recovery mechanisms
 
 ## 🔒 Security First: Understanding Authentication
 
 This adapter enforces API key authentication to protect your service. There are two levels of access:
 
-1.  **Client Keys (`ADAPTER_API_KEYS`)**: For standard users. These keys grant access to core functionalities like Anthropic Messages API (`/v1/messages`), token counting (`/v1/messages/count_tokens`), and listing models (`/v1/models`).
-2.  **Admin Keys (`ADMIN_API_KEYS`)**: For administrators. These keys grant access to all endpoints, including protected management endpoints like resetting a Gemini key (`/admin/reset-key/{prefix}`).
+1.  **Client Keys (`SECURITY_ADAPTER_API_KEYS` or `ADAPTER_API_KEYS`)**: For standard users. These keys grant access to core functionalities like Anthropic Messages API (`/v1/messages`), token counting (`/v1/messages/count_tokens`), and listing models (`/v1/models`).
+2.  **Admin Keys (`SECURITY_ADMIN_API_KEYS` or `ADMIN_API_KEYS`)**: For administrators. These keys grant access to all endpoints, including protected management endpoints like resetting a Gemini key (`/admin/reset-key/{prefix}`).
 
-If `ADMIN_API_KEYS` are not set, the client keys will also have access to admin endpoints. For production environments, it is **highly recommended** to set separate admin keys.
+If admin keys are not set, the client keys will also have access to admin endpoints. For production environments, it is **highly recommended** to set separate admin keys.
 
 Authentication is handled via the `X-API-Key` header or an `Authorization: Bearer <token>` header.
 
-## 🚀 Deployment with Docker (Recommended)
+### Enhanced Security Features (v2.1.0)
 
-Deploying with Docker is the simplest and most secure method.
+- **IP Blocking**: Automatic IP blocking after repeated failed attempts
+- **Rate Limiting**: Configurable rate limiting per client key
+- **Circuit Breaker**: Prevents cascading failures during service issues
+- **Smart Error Classification**: Intelligent error handling and logging
+
+## 🚀 Quick Start Guide
 
 ### Prerequisites
 
--   Git
--   Docker
--   Docker Compose
+-   **Docker** and **Docker Compose** installed on your system
+-   **Google Gemini API Keys** ([Get yours here](https://makersuite.google.com/app/apikey))
+-   **Git** for cloning the repository
 
-### Step 1: Clone the Repository
+### Step 1: Get Your API Keys
+
+1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
+2. Sign in with your Google account
+3. Create one or more API keys
+4. Copy the keys (they start with `AIza...`)
+
+### Step 2: Deploy the Service
 
 ```bash
+# Clone the repository
 git clone https://github.com/tellerlin/gemini-claude.git
 cd gemini-claude
+
+# Copy and configure environment variables
+cp .env.example .env
+
+# Edit the configuration (see configuration section below)
+nano .env  # or use your preferred editor
+
+# Start the service
+docker-compose up -d
+
+# Check if it's running
+docker-compose ps
+docker-compose logs -f
 ```
 
-### Step 2: Configure Environment Variables
+The service will be available at `http://localhost:8000` (or your server's IP).
 
-Create a `.env` file by copying the example. This file will store all your secrets and configurations.
+### Step 3: Test Your Deployment
 
 ```bash
-cp .env.example .env
+# Basic health check (no authentication required)
+curl http://localhost:8000/health
+
+# Test with your API key
+curl http://localhost:8000/v1/models \
+  -H "Authorization: Bearer your-client-key-123"
 ```
 
-Now, edit the `.env` file with a text editor (`nano .env` or `vim .env`) and fill in the required values.
+## ⚙️ Essential Configuration
+
+Edit your `.env` file with these **required** settings:
 
 ```env
-# .env
+# =============================================
+# REQUIRED: Gemini API Configuration
+# =============================================
+# Get your API keys from: https://makersuite.google.com/app/apikey
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
 
-# --- Gemini API Keys ---
-# Add your Gemini API keys here, separated by commas.
-# Example: GEMINI_API_KEYS=AIzaSyABC...,AIzaSyDEF...
-GEMINI_API_KEYS=
+# =============================================
+# REQUIRED: Security Configuration
+# =============================================
+# Generate strong keys: openssl rand -hex 32
+SECURITY_ADAPTER_API_KEYS=your-client-key-123,your-client-key-456
 
-# --- Adapter Security Keys ---
-# Required for production. These keys are used by your clients (e.g., Claude Code) to access the adapter.
-# Generate strong keys using 'openssl rand -hex 32'
-# Example: ADAPTER_API_KEYS=client-key-123,client-key-456
-ADAPTER_API_KEYS=
+# =============================================
+# OPTIONAL: Admin Access
+# =============================================
+# Optional admin keys for management endpoints
+SECURITY_ADMIN_API_KEYS=your-admin-key-abc,your-admin-key-def
 
-# Optional but Recommended: Separate keys for admin access.
-# Example: ADMIN_API_KEYS=admin-key-abc,admin-key-def
-ADMIN_API_KEYS=
-
-# --- Network Configuration ---
-# The host and port the service will run on inside the Docker container.
-HOST=0.0.0.0
-PORT=8000
-
-# --- Key Management ---
-# Number of consecutive failures before a Gemini key is put into cooling.
-MAX_FAILURES=1
-# Cooldown period in seconds for a failed Gemini key.
-COOLING_PERIOD=300
-# Request timeout in seconds.
-REQUEST_TIMEOUT=45
-
-# --- Proxy (Optional) ---
-# If you need to route Gemini API traffic through a proxy, uncomment and set the URL.
-# PROXY_URL=http://your-proxy-url:port
+# =============================================
+# OPTIONAL: Service Configuration
+# =============================================
+SERVICE_HOST=0.0.0.0
+SERVICE_PORT=8000
+SERVICE_LOG_LEVEL=INFO
 ```
 
-**Important**: Protect your `.env` file. It contains sensitive keys.
+**⚠️ Important Security Notes:**
+- Keep your `.env` file secure and never commit it to version control
+- Use strong, unique API keys for `SECURITY_ADAPTER_API_KEYS`
+- Set `SECURITY_ADMIN_API_KEYS` for production environments
+- Generate secure keys with: `openssl rand -hex 32`
 
 ### Step 3: Launch the Service
 
@@ -189,35 +225,82 @@ docker-compose up -d
 
 ## ⚙️ Complete Configuration Reference
 
-### Environment Variables
+### Environment Variables (v2.1.0)
 
+#### Service Configuration
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SERVICE_ENVIRONMENT` | No | `development` | Runtime environment (development/production) |
+| `SERVICE_HOST` | No | `0.0.0.0` | Host to bind to |
+| `SERVICE_PORT` | No | `8000` | Port to bind to |
+| `SERVICE_WORKERS` | No | `1` | Number of worker processes |
+| `SERVICE_LOG_LEVEL` | No | `INFO` | Logging level |
+| `SERVICE_ENABLE_METRICS` | No | `true` | Enable metrics collection |
+| `SERVICE_ENABLE_HEALTH_CHECK` | No | `true` | Enable health check endpoint |
+
+#### Gemini API Configuration
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `GEMINI_API_KEYS` | Yes | - | Comma-separated Google Gemini API keys |
-| `ADAPTER_API_KEYS` | Yes | - | Client authentication keys (generate with `openssl rand -hex 32`) |
-| `ADMIN_API_KEYS` | No | - | Admin authentication keys (recommended for production) |
-| `HOST` | No | `0.0.0.0` | Host to bind to inside container |
-| `PORT` | No | `8000` | Port to bind to inside container |
-| `MAX_FAILURES` | No | `1` | Consecutive failures before key cooling |
-| `COOLING_PERIOD` | No | `300` | Seconds to keep failed key in cooling |
-| `REQUEST_TIMEOUT` | No | `45` | Timeout for Gemini API requests in seconds |
-| `MAX_RETRIES` | No | `0` | Number of retry attempts for failed requests |
-| `PROXY_URL` | No | - | HTTP proxy URL for Gemini API calls |
+| `GEMINI_MAX_FAILURES` | No | `3` | Consecutive failures before key cooling |
+| `GEMINI_COOLING_PERIOD` | No | `300` | Seconds to keep failed key in cooling |
+| `GEMINI_HEALTH_CHECK_INTERVAL` | No | `60` | Health check interval in seconds |
+| `GEMINI_REQUEST_TIMEOUT` | No | `45` | Timeout for Gemini API requests |
+| `GEMINI_MAX_RETRIES` | No | `2` | Number of retry attempts |
+| `GEMINI_PROXY_URL` | No | - | HTTP proxy URL for API calls |
 
-### API Key Format Examples
+#### Security Configuration
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SECURITY_ADAPTER_API_KEYS` | Yes | - | Client authentication keys |
+| `SECURITY_ADMIN_API_KEYS` | No | - | Admin authentication keys |
+| `SECURITY_ENABLE_IP_BLOCKING` | No | `true` | Enable IP blocking |
+| `SECURITY_MAX_FAILED_ATTEMPTS` | No | `5` | Max failed attempts before IP block |
+| `SECURITY_BLOCK_DURATION` | No | `300` | IP block duration in seconds |
+| `SECURITY_ENABLE_RATE_LIMITING` | No | `true` | Enable rate limiting |
+| `SECURITY_RATE_LIMIT_REQUESTS` | No | `100` | Rate limit requests per window |
+| `SECURITY_RATE_LIMIT_WINDOW` | No | `60` | Rate limit window in seconds |
+
+#### Performance Configuration
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `CACHE_ENABLED` | No | `true` | Enable response caching |
+| `CACHE_MAX_SIZE` | No | `1000` | Maximum cache size |
+| `CACHE_TTL` | No | `300` | Cache TTL in seconds |
+| `CACHE_KEY_PREFIX` | No | `gemini_adapter` | Cache key prefix |
+| `PERF_MAX_KEEPALIVE_CONNECTIONS` | No | `20` | Max keepalive connections |
+| `PERF_MAX_CONNECTIONS` | No | `100` | Max total connections |
+| `PERF_KEEPALIVE_EXPIRY` | No | `30.0` | Keepalive expiry time |
+| `PERF_CONNECT_TIMEOUT` | No | `10.0` | Connection timeout |
+| `PERF_READ_TIMEOUT` | No | `45.0` | Read timeout |
+| `PERF_WRITE_TIMEOUT` | No | `10.0` | Write timeout |
+| `PERF_POOL_TIMEOUT` | No | `5.0` | Pool timeout |
+| `PERF_HTTP2_ENABLED` | No | `true` | Enable HTTP/2 |
+
+#### Optional Database Configuration
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `REDIS_URL` | No | - | Redis URL for distributed caching |
+| `REDIS_PASSWORD` | No | - | Redis password |
+| `REDIS_DB` | No | `0` | Redis database number |
+| `REDIS_MAX_CONNECTIONS` | No | `10` | Max Redis connections |
+
+### Configuration Examples
 
 ```bash
-# Multiple Gemini keys
+# Multiple Gemini API keys
 GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
 
-# Multiple client keys
-ADAPTER_API_KEYS=client-key-123,client-key-456,client-key-abc
+# Client authentication keys
+SECURITY_ADAPTER_API_KEYS=client-key-123,client-key-456
 
-# Admin keys (separate from client keys)
-ADMIN_API_KEYS=admin-key-secure-1,admin-key-secure-2
+# Admin authentication keys (optional)
+SECURITY_ADMIN_API_KEYS=admin-key-secure-1,admin-key-secure-2
 
-# With proxy
-PROXY_URL=http://proxy.example.com:8080
+# Performance optimization settings
+CACHE_ENABLED=true
+PERF_HTTP2_ENABLED=true
+SERVICE_ENABLE_METRICS=true
 ```
 
 ## 🔧 Configuring Your Client (Claude Code Example)
@@ -247,49 +330,120 @@ The adapter uses the latest Gemini 2.5 models for optimal performance and capabi
 
 ## 📡 API Endpoints
 
-### Public Endpoints
-*No authentication required.*
+### Main Endpoints (Require Authentication)
 
--   `GET /`: Returns basic service information.
--   `GET /health`: A health check endpoint for monitoring. Returns `200 OK` if at least one Gemini key is active.
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/messages` | POST | **Primary Anthropic Messages API** - Full compatibility |
+| `/v1/messages/count_tokens` | POST | Count tokens before sending |
+| `/v1/models` | GET | List available models |
+| `/v1/chat/completions` | POST | OpenAI-compatible endpoint (legacy) |
+| `/stats` | GET | Usage statistics |
+| `/metrics` | GET | Detailed performance metrics |
 
-### Protected Endpoints
-*Requires a **Client API Key** (`X-API-Key` or `Bearer` token).*
+### Admin Endpoints (Require Admin Keys)
 
-#### Anthropic Messages API (Primary)
--   `POST /v1/messages`: **Primary endpoint** for Anthropic Messages API with complete compatibility.
--   `POST /v1/messages/count_tokens`: Count tokens for messages before sending.
--   `GET /v1/models`: Lists available Anthropic models (mapped to Gemini models).
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/reset-key/{prefix}` | POST | Reset a failed key |
+| `/admin/recover-key/{prefix}` | POST | Recover a permanently failed key |
+| `/admin/security-status` | GET | Security configuration status |
 
-#### Legacy OpenAI-Compatible API (Backward Compatibility)
--   `POST /v1/chat/completions`: Legacy OpenAI-compatible endpoint for backward compatibility.
--   `GET /stats`: Returns detailed statistics about key usage, failures, and status.
+### Public Endpoints (No Authentication)
 
-### Admin Endpoints
-*Requires an **Admin API Key**.*
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Service information |
+| `/health` | GET | Basic health check |
+| `/health/detailed` | GET | Detailed health status |
 
--   `POST /admin/reset-key/{key_prefix}`: Manually resets a failed or cooling Gemini key back to active status. `key_prefix` must be at least 4 characters.
--   `GET /admin/security-status`: Shows the current security configuration of the adapter.
+### Usage Examples
 
-#### Example: Checking Stats with `curl`
-
+#### Check Service Health
 ```bash
-curl http://localhost:8000/stats \
+curl http://localhost:8000/health/detailed \
   -H "Authorization: Bearer your-client-key-123"
 ```
 
-#### Example: Resetting a Key with `curl`
+#### View Performance Metrics
+```bash
+curl http://localhost:8000/metrics \
+  -H "Authorization: Bearer your-client-key-123"
+```
 
+#### Check Cache Performance
+```bash
+curl http://localhost:8000/cache/stats \
+  -H "Authorization: Bearer your-client-key-123"
+```
+
+#### Reset a Failed Key
 ```bash
 curl -X POST http://localhost:8000/admin/reset-key/AIza \
   -H "Authorization: Bearer your-admin-key-abc"
 ```
 
+#### Clear Cache
+```bash
+curl -X POST http://localhost:8000/cache/clear \
+  -H "Authorization: Bearer your-admin-key-abc"
+```
+
 ## 🐛 Troubleshooting
 
--   **"Invalid API key"**: Ensure the key you are using in your client is listed in `ADAPTER_API_KEYS` (or `ADMIN_API_KEYS` for admin endpoints) in your `.env` file. Remember to restart the service (`docker-compose restart`) after changing the `.env` file.
--   **"Service Unavailable" or 502/503 Errors**: This usually means all your Gemini API keys are in a "cooling" state. Check the logs (`docker-compose logs -f`) to see the errors. You can also check the `/health` endpoint for status or use the `/stats` endpoint to see the state of each key.
--   **Connection Refused**: Verify that the Docker container is running (`docker-compose ps`). Check that you are using the correct IP address and port for your server. If running on a cloud provider, ensure the firewall rules allow traffic on port 8000.
+### Common Issues
+
+-   **"Invalid API key"**: Ensure the key you are using is listed in `SECURITY_ADAPTER_API_KEYS` (or `SECURITY_ADMIN_API_KEYS` for admin endpoints) in your `.env` file. Restart the service after configuration changes.
+
+-   **"Service Unavailable" or 502/503 Errors**: Usually indicates all Gemini API keys are in a "cooling" state. Check logs (`docker-compose logs -f`) for error details. Use the `/health/detailed` endpoint for comprehensive status.
+
+-   **Connection Refused**: Verify Docker container is running (`docker-compose ps`). Check IP address, port, and firewall rules. Ensure port 8000 is accessible.
+
+### Performance Issues
+
+-   **High Response Times**: Check `/metrics` endpoint for performance statistics. Consider increasing `PERF_MAX_CONNECTIONS` or enabling caching if disabled.
+
+-   **Cache Not Working**: Verify `CACHE_ENABLED=true` in configuration. Check `/cache/stats` for cache hit rates.
+
+-   **Memory Usage**: Monitor `CACHE_MAX_SIZE` setting. Reduce cache size if memory usage is high.
+
+### Advanced Diagnostics
+
+#### Check Detailed Service Health
+```bash
+curl http://localhost:8000/health/detailed \
+  -H "Authorization: Bearer your-client-key-123"
+```
+
+#### View Performance Metrics
+```bash
+curl http://localhost:8000/metrics \
+  -H "Authorization: Bearer your-client-key-123"
+```
+
+#### Check Recent Errors
+```bash
+curl http://localhost:8000/errors/recent \
+  -H "Authorization: Bearer your-admin-key-abc"
+```
+
+#### Monitor Real-time Logs
+```bash
+docker-compose logs -f --tail=100
+```
+
+### Configuration Validation
+
+After making changes to `.env`, always restart the service:
+```bash
+docker-compose down
+docker-compose up -d
+```
+
+Verify configuration is loaded correctly by checking service info:
+```bash
+curl http://localhost:8000/
+```
 
 ---
 
@@ -299,18 +453,99 @@ curl -X POST http://localhost:8000/admin/reset-key/AIza \
 gemini-claude/
 ├── main.py                 # Development entry point
 ├── src/
-│   ├── main.py            # FastAPI application (main server)
-│   └── anthropic_api.py   # Anthropic API compatibility layer
-├── requirements.txt       # Python dependencies
-├── .env.example          # Environment configuration template
-├── docker-compose.yml    # Docker Compose configuration
-├── Dockerfile            # Docker image configuration
-├── logs/                 # Application logs
-├── README.md             # Main project documentation (English)
-├── README.zh.md          # Chinese documentation
-├── CLAUDE.md             # Project instructions for Claude Code
-└── security_guide.md     # Security configuration guide
+│   ├── main.py            # FastAPI application server
+│   ├── anthropic_api.py   # Anthropic API compatibility layer
+│   ├── config.py          # Configuration management
+│   ├── error_handling.py  # Enhanced error handling
+│   └── performance.py     # Performance optimizations
+├── requirements.txt        # Python dependencies
+├── .env.example           # Configuration template
+├── docker-compose.yml     # Docker deployment config
+├── Dockerfile             # Docker image config
+├── logs/                  # Application logs (auto-created)
+└── README.md              # This file
 ```
+
+### Key Modules (v2.1.0)
+
+- **`config.py`**: Hierarchical configuration system with environment variable support
+- **`error_handling.py`**: Smart error classification, circuit breaker patterns, and monitoring
+- **`performance.py`**: Response caching, connection pooling, and performance metrics
+
+## 🔒 Security Best Practices
+
+1. **Use Strong API Keys**: Generate with `openssl rand -hex 32`
+2. **Separate Admin Keys**: Set different keys for `SECURITY_ADMIN_API_KEYS`
+3. **Secure Your Server**: Use firewall rules to restrict access
+4. **Monitor Access**: Check logs regularly for unauthorized attempts
+5. **Keep Updated**: Pull updates regularly with `git pull && docker-compose up -d --build`
+
+## 📊 Advanced Configuration
+
+<details>
+<summary>Click to expand full configuration options</summary>
+
+```env
+# =============================================
+# Service Configuration
+# =============================================
+SERVICE_ENVIRONMENT=production
+SERVICE_HOST=0.0.0.0
+SERVICE_PORT=8000
+SERVICE_WORKERS=1
+SERVICE_LOG_LEVEL=INFO
+SERVICE_ENABLE_METRICS=true
+SERVICE_ENABLE_HEALTH_CHECK=true
+SERVICE_CORS_ORIGINS=*
+
+# =============================================
+# Gemini API Configuration
+# =============================================
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...
+GEMINI_MAX_FAILURES=3
+GEMINI_COOLING_PERIOD=300
+GEMINI_HEALTH_CHECK_INTERVAL=60
+GEMINI_REQUEST_TIMEOUT=45
+GEMINI_MAX_RETRIES=2
+GEMINI_PROXY_URL=http://proxy.example.com:8080
+
+# =============================================
+# Security Configuration
+# =============================================
+SECURITY_ADAPTER_API_KEYS=your-client-key-123,your-client-key-456
+SECURITY_ADMIN_API_KEYS=your-admin-key-abc,your-admin-key-def
+SECURITY_ENABLE_IP_BLOCKING=true
+SECURITY_MAX_FAILED_ATTEMPTS=5
+SECURITY_BLOCK_DURATION=300
+SECURITY_ENABLE_RATE_LIMITING=true
+SECURITY_RATE_LIMIT_REQUESTS=100
+SECURITY_RATE_LIMIT_WINDOW=60
+
+# =============================================
+# Performance Optimization
+# =============================================
+CACHE_ENABLED=true
+CACHE_MAX_SIZE=1000
+CACHE_TTL=300
+CACHE_KEY_PREFIX=gemini_adapter
+
+PERF_MAX_KEEPALIVE_CONNECTIONS=20
+PERF_MAX_CONNECTIONS=100
+PERF_KEEPALIVE_EXPIRY=30.0
+PERF_CONNECT_TIMEOUT=10.0
+PERF_READ_TIMEOUT=45.0
+PERF_WRITE_TIMEOUT=10.0
+PERF_POOL_TIMEOUT=5.0
+PERF_HTTP2_ENABLED=true
+
+# =============================================
+# Optional Redis Configuration
+# =============================================
+REDIS_URL=redis://localhost:6379/0
+REDIS_PASSWORD=your-redis-password
+```
+
+</details>
 
 ---
 

@@ -20,12 +20,25 @@ from dotenv import load_dotenv
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from collections import defaultdict, deque
 
+# Import new optimization modules
+from .config import get_config, AppConfig
+from .error_handling import error_monitor, monitor_errors, ErrorClassifier
+from .performance import response_cache, http_client, performance_monitor, monitor_performance
+
 # Import Anthropic API compatibility layer
-from .anthropic_api import (
-    MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
-    AnthropicToGeminiConverter, GeminiToAnthropicConverter, 
-    StreamingResponseGenerator, ToolConverter, log_request_beautifully
-)
+try:
+    from .anthropic_api import (
+        MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
+        AnthropicToGeminiConverter, GeminiToAnthropicConverter, 
+        StreamingResponseGenerator, ToolConverter, log_request_beautifully
+    )
+except ImportError:
+    # Fallback for different import contexts
+    from anthropic_api import (
+        MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
+        AnthropicToGeminiConverter, GeminiToAnthropicConverter, 
+        StreamingResponseGenerator, ToolConverter, log_request_beautifully
+    )
 
 # Load environment variables from .env file
 load_dotenv()
@@ -56,29 +69,7 @@ class APIKeyInfo:
     total_requests: int = 0
     successful_requests: int = 0
 
-class GeminiConfig(BaseModel):
-    api_keys: List[str] = Field(..., description="List of Gemini API keys")
-    proxy_url: Optional[str] = Field(None, description="Proxy URL")
-    max_failures: int = Field(3, description="Maximum number of failures before cooling", ge=1)
-    cooling_period: int = Field(300, description="Cooling period in seconds", ge=60)
-    health_check_interval: int = Field(60, description="Health check interval in seconds", ge=10)
-    request_timeout: int = Field(45, description="Request timeout in seconds", ge=10)
-    max_retries: int = Field(2, description="Maximum retry attempts for a request", ge=0)
-    
-    @validator('api_keys')
-    def validate_api_keys(cls, v):
-        if not v:
-            raise ValueError("At least one API key is required")
-        # Filter out empty keys and clean quotes
-        valid_keys = []
-        for key in v:
-            if key and key.strip():
-                cleaned_key = key.strip().strip('"\'').strip()
-                if cleaned_key:
-                    valid_keys.append(cleaned_key)
-        if not valid_keys:
-            raise ValueError("No valid API keys provided")
-        return valid_keys
+# GeminiConfig is now handled by AppConfig.gemini in config module
 
 class ChatRequest(BaseModel):
     messages: List[Dict[str, str]]
@@ -96,34 +87,33 @@ class ChatRequest(BaseModel):
                 raise ValueError("Each message must have 'role' and 'content' fields")
         return v
 
-# Security Configuration
+# Security Configuration (enhanced with new config system)
 class SecurityConfig:
-    def __init__(self):
-        # Load adapter API keys from environment
-        adapter_keys_str = os.getenv("ADAPTER_API_KEYS", "")
-        self.valid_api_keys: Set[str] = set(
-            key.strip() for key in adapter_keys_str.split(',') 
-            if key.strip()
-        )
-        self.security_enabled = bool(self.valid_api_keys)
+    def __init__(self, app_config: AppConfig):
+        # Use new AppConfig only
+        self.valid_api_keys: Set[str] = set(app_config.security.adapter_api_keys)
+        self.admin_keys: Set[str] = set(app_config.security.admin_api_keys)
+        self.enable_ip_blocking = app_config.security.enable_ip_blocking
+        self.max_failed_attempts = app_config.security.max_failed_attempts
+        self.block_duration = app_config.security.block_duration
+        self.enable_rate_limiting = app_config.security.enable_rate_limiting
+        self.rate_limit_requests = app_config.security.rate_limit_requests
+        self.rate_limit_window = app_config.security.rate_limit_window
         
-        # Admin keys for management endpoints
-        admin_keys_str = os.getenv("ADMIN_API_KEYS", "")
-        self.admin_keys: Set[str] = set(
-            key.strip() for key in admin_keys_str.split(',')
-            if key.strip()
-        )
+        self.security_enabled = bool(self.valid_api_keys)
         
         if self.security_enabled:
             logger.info(f"Security enabled with {len(self.valid_api_keys)} client keys")
         else:
-            logger.warning("Security disabled - no ADAPTER_API_KEYS configured")
+            logger.warning("Security disabled - no SECURITY_ADAPTER_API_KEYS configured")
             
         if self.admin_keys:
             logger.info(f"Admin access enabled with {len(self.admin_keys)} admin keys")
+        else:
+            logger.info("No admin keys configured - client keys will have admin access")
 
-# Initialize security config
-security_config = SecurityConfig()
+# Global security config (will be initialized with AppConfig)
+security_config: Optional[SecurityConfig] = None
 
 # Authentication schemes
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -197,12 +187,14 @@ async def verify_admin_key(
     )
 
 class GeminiKeyManager:
-    def __init__(self, config: GeminiConfig):
+    def __init__(self, config):  # config is now AppConfig.gemini
         self.config = config
         self.keys: Dict[str, APIKeyInfo] = {}
         self.key_cycle = None
         self.lock = asyncio.Lock()
         self.last_key_used = None  # 添加这个属性来避免连续使用同一个key
+        # 添加密钥性能跟踪
+        self.key_performance = defaultdict(lambda: {"response_times": deque(maxlen=100), "errors": 0})
 
         for key in config.api_keys:
             if key and key.strip():
@@ -211,7 +203,7 @@ class GeminiKeyManager:
         if not self.keys:
             raise ValueError("No valid API keys provided to key manager")
 
-        logger.info(f"Initialized {len(self.keys)} API keys.")
+        logger.info(f"Initialized {len(self.keys)} API keys with performance tracking.")
 
     async def get_available_key(self) -> Optional[APIKeyInfo]:
         async with self.lock:
@@ -226,17 +218,8 @@ class GeminiKeyManager:
                 logger.warning("No available API keys.")
                 return None
 
-            # 智能选择key，避免连续使用同一个key
-            if len(active_keys) > 1 and self.last_key_used:
-                available_keys = [k for k in active_keys if k.key != self.last_key_used]
-                if available_keys:
-                    # 选择成功率最高的key
-                    selected_key = max(available_keys, key=lambda k: k.successful_requests / max(k.total_requests, 1))
-                else:
-                    selected_key = active_keys[0]
-            else:
-                # 选择成功率最高的key
-                selected_key = max(active_keys, key=lambda k: k.successful_requests / max(k.total_requests, 1))
+智能密钥选择：基于性能指标选择最佳密钥
+            selected_key = self._select_best_key(active_keys)
             
             self.last_key_used = selected_key.key
             return selected_key
@@ -354,6 +337,32 @@ class GeminiKeyManager:
         # DEFAULT - Standard cooling
         return 'DEFAULT', 300  # 5 minutes
 
+    def _select_best_key(self, active_keys: List[APIKeyInfo]) -> APIKeyInfo:
+        """基于性能指标选择最佳密钥"""
+        def key_score(key_info: APIKeyInfo) -> float:
+            # 成功率权重 60%
+            success_rate = key_info.successful_requests / max(key_info.total_requests, 1)
+            
+            # 响应时间权重 30%
+            perf_data = self.key_performance[key_info.key]
+            avg_response_time = sum(perf_data["response_times"]) / max(len(perf_data["response_times"]), 1)
+            response_score = 1.0 / (1.0 + avg_response_time)  # 响应时间越低分数越高
+            
+            # 最近使用权重 10%（避免总是使用同一个key）
+            recent_use_penalty = 0.9 if key_info.key == self.last_key_used else 1.0
+            
+            return (success_rate * 0.6 + response_score * 0.3) * recent_use_penalty
+        
+        return max(active_keys, key=key_score)
+    
+    async def record_key_performance(self, key: str, response_time: float, success: bool):
+        """记录密钥性能数据"""
+        async with self.lock:
+            perf_data = self.key_performance[key]
+            perf_data["response_times"].append(response_time)
+            if not success:
+                perf_data["errors"] += 1
+    
     async def mark_key_success(self, key: str):
         async with self.lock:
             key_info = self.keys.get(key)
@@ -461,80 +470,169 @@ class LiteLLMAdapter:
     def __init__(self, config: GeminiConfig, key_manager: GeminiKeyManager):
         self.config = config
         self.key_manager = key_manager
-        
-        # Initialize converters
         self.anthropic_to_gemini = AnthropicToGeminiConverter()
         self.gemini_to_anthropic = GeminiToAnthropicConverter()
         self.tool_converter = ToolConverter()
         
-        # Configure proxy if provided
+        # 添加请求去重
+        self._request_deduplicator = {}
+        self._dedup_lock = asyncio.Lock()
+        
         if config.proxy_url:
             os.environ['HTTPS_PROXY'] = config.proxy_url
             os.environ['HTTP_PROXY'] = config.proxy_url
             logger.info(f"Using proxy: {config.proxy_url}")
         
-        # Configure litellm for optimal performance
-        litellm.request_timeout = config.request_timeout
-        litellm.max_retries = 0  # We handle our own retries
-        litellm.set_verbose = False  # Reduce noise in logs
-        litellm.drop_params = True  # Drop unsupported parameters for better compatibility
+        # 优化 litellm 配置
+        litellm.request_timeout = 30  # 减少超时时间
+        litellm.max_retries = 0
+        litellm.set_verbose = False
+        litellm.drop_params = True
+        litellm.num_retries = 0  # 禁用内部重试，使用我们的重试逻辑
 
+    async def _deduplicate_request(self, request_hash: str):
+        """请求去重：避免相同请求同时处理"""
+        async with self._dedup_lock:
+            if request_hash in self._request_deduplicator:
+                # 等待已有请求完成
+                return await self._request_deduplicator[request_hash]
+            else:
+                # 创建新的Future
+                future = asyncio.Future()
+                self._request_deduplicator[request_hash] = future
+                return future
+
+    @monitor_errors
     async def chat_completion(self, request: ChatRequest) -> Union[Dict, Any]:
+        # 生成请求哈希用于去重
+        import hashlib
+        request_hash = hashlib.md5(
+            json.dumps({
+                "model": request.model,
+                "messages": request.messages,
+                "temperature": request.temperature,
+                "stream": request.stream
+            }, sort_keys=True).encode()
+        ).hexdigest()
+        
+        # 检查去重
+        if not request.stream:  # 只对非流式请求去重
+            existing_future = await self._deduplicate_request(request_hash)
+            if not existing_future.done():
+                try:
+                    return await existing_future
+                except:
+                    pass  # 如果等待失败，继续处理新请求
+        
         last_error = None
         attempted_keys = set()
         
-        # 最多尝试所有可用的key
-        max_attempts = len(self.key_manager.keys)
+        # 检查缓存
+        if not request.stream:
+            cache_key = {
+                "model": request.model,
+                "messages": request.messages,
+                "temperature": request.temperature,
+                "max_tokens": request.max_tokens
+            }
+            cached_response = await response_cache.get(cache_key)
+            if cached_response:
+                # 更新去重状态
+                if request_hash in self._request_deduplicator:
+                    self._request_deduplicator[request_hash].set_result(cached_response)
+                    del self._request_deduplicator[request_hash]
+                return cached_response
         
-        for attempt in range(max_attempts):
-            key_info = await self.key_manager.get_available_key()
-            if not key_info or key_info.key in attempted_keys:
-                break
+        # 并发尝试多个密钥（限制并发数）
+        max_concurrent = min(3, len(self.key_manager.keys))
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def try_key_request(key_info: APIKeyInfo):
+            async with semaphore:
+                if key_info.key in attempted_keys:
+                    return None
+                    
+                attempted_keys.add(key_info.key)
+                start_time = time.time()
                 
-            attempted_keys.add(key_info.key)
+                try:
+                    async with self.key_manager.lock:
+                        key_info.total_requests += 1
+                    
+                    kwargs = {
+                        "model": f"gemini/{request.model}",
+                        "messages": request.messages,
+                        "api_key": key_info.key,
+                        "temperature": request.temperature,
+                        "stream": request.stream,
+                        "timeout": self.config.request_timeout,
+                    }
+                    
+                    if request.max_tokens:
+                        kwargs["max_tokens"] = request.max_tokens
+                    
+                    response = await asyncio.wait_for(
+                        litellm.acompletion(**kwargs),
+                        timeout=self.config.request_timeout
+                    )
+                    
+                    response_time = time.time() - start_time
+                    await self.key_manager.mark_key_success(key_info.key)
+                    await self.key_manager.record_key_performance(key_info.key, response_time, True)
+                    
+                    return response
+                    
+                except Exception as e:
+                    response_time = time.time() - start_time
+                    await self.key_manager.mark_key_failed(key_info.key, str(e))
+                    await self.key_manager.record_key_performance(key_info.key, response_time, False)
+                    raise e
+        
+        # 获取可用密钥并并发尝试
+        active_keys = [k for k in self.key_manager.keys.values() if k.status == KeyStatus.ACTIVE]
+        if not active_keys:
+            raise HTTPException(status_code=502, detail="No available API keys")
+        
+        # 限制尝试的密钥数量
+        keys_to_try = active_keys[:max_concurrent]
+        
+        try:
+            # 并发执行请求
+            tasks = [try_key_request(key_info) for key_info in keys_to_try]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             
-            try:
-                # Increment total requests counter
-                async with self.key_manager.lock:
-                    key_info.total_requests += 1
-                
-                kwargs = {
-                    "model": f"gemini/{request.model}",
-                    "messages": request.messages,
-                    "api_key": key_info.key,
-                    "temperature": request.temperature,
-                    "stream": request.stream,
-                    "timeout": self.config.request_timeout,  # 显式设置超时
-                }
-                
-                if request.max_tokens:
-                    kwargs["max_tokens"] = request.max_tokens
-                
-                logger.info(f"Attempting request with key {key_info.key[:8]}... (attempt {attempt + 1}/{max_attempts})")
-                
-                # 使用 asyncio.wait_for 添加额外的超时保护
-                response = await asyncio.wait_for(
-                    litellm.acompletion(**kwargs),
-                    timeout=self.config.request_timeout + 5  # 比litellm的超时多5秒
-                )
-                
-                await self.key_manager.mark_key_success(key_info.key)
-                logger.info(f"Request successful with key {key_info.key[:8]}...")
-                return response
-
-            except asyncio.TimeoutError:
-                last_error = "Request timeout"
-                await self.key_manager.mark_key_failed(key_info.key, last_error)
-                logger.warning(f"Key {key_info.key[:8]}... timed out, trying next key...")
-            except Exception as e:
-                last_error = str(e)
-                await self.key_manager.mark_key_failed(key_info.key, last_error)
-                logger.warning(f"Key {key_info.key[:8]}... failed: {last_error}, trying next key...")
+            # 取消剩余任务
+            for task in pending:
+                task.cancel()
+            
+            # 获取第一个成功的结果
+            for task in done:
+                try:
+                    result = await task
+                    if result:
+                        # 缓存成功的响应
+                        if not request.stream:
+                            await response_cache.set(cache_key, result)
+                            # 更新去重状态
+                            if request_hash in self._request_deduplicator:
+                                self._request_deduplicator[request_hash].set_result(result)
+                                del self._request_deduplicator[request_hash]
+                        return result
+                except Exception as e:
+                    last_error = str(e)
+                    continue
+                    
+        except Exception as e:
+            last_error = str(e)
         
-        # 所有key都失败了
-        error_msg = f"Failed to process request with all available keys. Last error: {last_error}"
-        logger.error(error_msg)
-        raise HTTPException(status_code=502, detail=error_msg)
+        # 清理去重状态
+        if request_hash in self._request_deduplicator:
+            self._request_deduplicator[request_hash].set_exception(
+                HTTPException(status_code=502, detail=f"All keys failed. Last error: {last_error}")
+            )
+            del self._request_deduplicator[request_hash]
+        
+        raise HTTPException(status_code=502, detail=f"All available keys failed. Last error: {last_error}")
     
     async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
         """Handle Anthropic Messages API requests"""
@@ -579,22 +677,30 @@ class RateLimiter:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self.requests = defaultdict(deque)
+        self.lock = asyncio.Lock()  # 添加锁以支持并发
+        
+    async def is_allowed(self, client_id: str) -> bool:
+        async with self.lock:
+            now = time.time()
+            client_requests = self.requests[client_id]
+            
+            # 清理过期请求（批量处理）
+            cutoff_time = now - self.window_seconds
+            while client_requests and client_requests[0] < cutoff_time:
+                client_requests.popleft()
+            
+            # 检查限制
+            if len(client_requests) >= self.max_requests:
+                return False
+            
+            # 记录新请求
+            client_requests.append(now)
+            return True
     
-    def is_allowed(self, client_id: str) -> bool:
-        now = time.time()
+    def get_remaining_requests(self, client_id: str) -> int:
+        """获取剩余请求数"""
         client_requests = self.requests[client_id]
-        
-        # 清理过期的请求记录
-        while client_requests and client_requests[0] < now - self.window_seconds:
-            client_requests.popleft()
-        
-        # 检查是否超过限制
-        if len(client_requests) >= self.max_requests:
-            return False
-        
-        # 记录新请求
-        client_requests.append(now)
-        return True
+        return max(0, self.max_requests - len(client_requests))
 
 # 创建全局限流器实例
 rate_limiter = RateLimiter(max_requests=100, window_seconds=60)
@@ -609,108 +715,100 @@ async def check_rate_limit(client_key: str = Depends(verify_api_key)):
         )
     return client_key
 
-# 条件触发的key恢复检查任务
-async def health_check_task():
-    """条件触发检查API keys的健康状态"""
+# 优化的健康检查任务
+async def optimized_health_check_task():
+    """优化的健康检查任务"""
+    check_interval = 30
+    last_recovery_check = 0
+    consecutive_failures = 0
+    
     while True:
-        if key_manager:
-            try:
-                stats = await key_manager.get_stats()
-                total_keys = stats.get("total_keys", 0)
-                active_keys = stats.get("active_keys", 0)
-                cooling_keys = stats.get("cooling_keys", 0)
+        try:
+            if not key_manager:
+                await asyncio.sleep(check_interval)
+                continue
                 
-                # 检查是否需要触发key恢复检查
-                should_check = False
-                check_reason = ""
+            current_time = time.time()
+            stats = await key_manager.get_stats()
+            
+            total_keys = stats.get("total_keys", 0)
+            active_keys = stats.get("active_keys", 0)
+            cooling_keys = stats.get("cooling_keys", 0)
+            failed_keys = stats.get("failed_keys", 0)
+            
+            # 动态调整检查间隔
+            if active_keys == 0:
+                check_interval = 10  # 紧急情况下更频繁检查
+            elif active_keys < total_keys * 0.3:
+                check_interval = 15  # 密钥不足时更频繁检查
+            else:
+                check_interval = 30  # 正常间隔
+            
+            # 智能恢复检查条件
+            should_check = False
+            check_reason = ""
+            
+            # 条件1: 无可用密钥（紧急）
+            if active_keys == 0:
+                should_check = True
+                check_reason = "CRITICAL: No active keys available"
+            # 条件2: 可用密钥严重不足
+            elif active_keys < max(1, total_keys * 0.2):
+                should_check = True
+                check_reason = f"URGENT: Very low active keys: {active_keys}/{total_keys}"
+            # 条件3: 有冷却密钥且时间间隔足够
+            elif cooling_keys > 0 and (current_time - last_recovery_check) > 120:
+                should_check = True
+                check_reason = f"ROUTINE: Check cooling keys ({cooling_keys})"
+            
+            if should_check:
+                logger.info(f"Health check triggered: {check_reason}")
+                recovered_count = await key_manager._check_and_recover_keys()
+                last_recovery_check = current_time
                 
-                # 条件1: 可用key数量少于3个
-                if active_keys < 3:
-                    should_check = True
-                    check_reason = f"Low active keys: {active_keys} < 3"
-                
-                # 条件2: 可用key数量少于总数的10%
-                elif total_keys > 0 and (active_keys / total_keys) < 0.1:
-                    should_check = True
-                    check_reason = f"Low active key ratio: {active_keys}/{total_keys} ({active_keys/total_keys*100:.1f}%)"
-                
-                # 条件3: 有冷却中的key且距离上次检查超过5分钟
-                elif cooling_keys > 0:
-                    current_time = time.time()
-                    last_check_time = getattr(key_manager, 'last_recovery_check', 0)
-                    if current_time - last_check_time > 300:  # 5分钟
-                        should_check = True
-                        check_reason = f"Cooling keys present ({cooling_keys}) and check interval reached"
-                
-                if should_check:
-                    logger.info(f"Triggering key recovery check: {check_reason}")
+                if recovered_count > 0:
+                    logger.info(f"Recovery successful: {recovered_count} keys restored")
+                    consecutive_failures = 0
+                elif active_keys == 0:
+                    consecutive_failures += 1
+                    logger.error(f"Recovery failed, consecutive failures: {consecutive_failures}")
                     
-                    # 手动触发一次key状态检查
-                    await key_manager._check_and_recover_keys()
-                    
-                    # 更新检查时间
-                    key_manager.last_recovery_check = time.time()
-                    
-                    # 获取更新后的统计信息
-                    new_stats = await key_manager.get_stats()
-                    recovered_keys = new_stats.get("active_keys", 0) - active_keys
-                    
-                    if recovered_keys > 0:
-                        logger.info(f"Key recovery successful: {recovered_keys} keys recovered")
-                    else:
-                        logger.info(f"No keys recovered in this check")
-                
-            except Exception as e:
-                logger.error(f"Health check error: {e}")
+                    # 如果连续失败太多次，发送警报
+                    if consecutive_failures >= 5:
+                        logger.critical("ALERT: Service degraded - all keys failed multiple times")
+                        # 这里可以添加外部通知逻辑
+            
+        except Exception as e:
+            logger.error(f"Health check error: {e}")
+            consecutive_failures += 1
         
-        # 降低检查频率，每30秒检查一次条件
-        await asyncio.sleep(30)
+        await asyncio.sleep(check_interval)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global key_manager, adapter
+    global key_manager, adapter, security_config
     
     try:
-        # 原有的初始化代码...
-        # Load and validate environment variables
-        api_keys_str = os.getenv("GEMINI_API_KEYS", "")
-        if not api_keys_str:
-            logger.error("GEMINI_API_KEYS environment variable is required!")
-            raise ValueError("GEMINI_API_KEYS environment variable is required!")
+        # Load new configuration system
+        app_config = get_config()
         
-        # Parse and validate API keys with flexible format support
-        api_keys = []
-        for key in api_keys_str.split(","):
-            if key and key.strip():
-                cleaned_key = key.strip().strip('"\'').strip()
-                if cleaned_key:
-                    api_keys.append(cleaned_key)
-        if not api_keys:
-            logger.error("No valid API keys provided!")
-            raise ValueError("No valid API keys provided!")
+        # Initialize security config with new AppConfig
+        security_config = SecurityConfig(app_config)
         
-        # Validate key format (Gemini keys typically start with 'AIza')
-        invalid_keys = [key for key in api_keys if not key.startswith('AIza')]
-        if invalid_keys:
-            logger.warning(f"Potentially invalid API keys detected: {len(invalid_keys)} keys don't start with 'AIza'")
+        # Initialize key manager and adapter using AppConfig directly
+        key_manager = GeminiKeyManager(app_config.gemini)
+        adapter = LiteLLMAdapter(app_config.gemini, key_manager)
         
-        config = GeminiConfig(
-            api_keys=api_keys,
-            proxy_url=os.getenv("PROXY_URL"),
-            max_failures=int(os.getenv("MAX_FAILURES", "1")),
-            cooling_period=int(os.getenv("COOLING_PERIOD", "300")),
-            health_check_interval=int(os.getenv("HEALTH_CHECK_INTERVAL", "60")),
-            request_timeout=int(os.getenv("REQUEST_TIMEOUT", "45")),
-            max_retries=int(os.getenv("MAX_RETRIES", "0"))
-        )
+        # Initialize HTTP client
+        await http_client.initialize()
         
-        key_manager = GeminiKeyManager(config)
-        adapter = LiteLLMAdapter(config, key_manager)
+        # 启动优化的健康检查任务
+        health_task = asyncio.create_task(optimized_health_check_task())
         
-        # 启动健康检查任务
-        health_task = asyncio.create_task(health_check_task())
-        
-        logger.info("Gemini Claude Adapter started successfully.")
+        logger.info("Gemini Claude Adapter v2.1.0 started successfully with optimizations.")
+        logger.info(f"Environment: {app_config.service.environment.value}")
+        logger.info(f"Caching: {'Enabled' if app_config.cache.enabled else 'Disabled'}")
+        logger.info(f"Performance monitoring: {'Enabled' if app_config.service.enable_metrics else 'Disabled'}")
         
         # Log security status
         if security_config.security_enabled:
@@ -731,6 +829,10 @@ async def lifespan(app: FastAPI):
                 await health_task
             except asyncio.CancelledError:
                 pass
+        
+        # Close HTTP client
+        await http_client.close()
+        
         logger.info("Gemini Claude Adapter shutting down.")
 
 app = FastAPI(
@@ -1057,7 +1159,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"error": {"message": "Internal server error", "type": "internal_error"}}
     )
 
-# 添加更好的监控endpoint
+# Enhanced monitoring endpoint with new optimization metrics
 @app.get("/metrics", dependencies=[Depends(verify_api_key)])
 async def get_metrics(client_key: str = Depends(verify_api_key)):
     """获取详细的服务监控指标"""
@@ -1065,24 +1167,97 @@ async def get_metrics(client_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=503, detail="Service not initialized")
     
     try:
+        # Get key manager stats
         stats = await key_manager.get_stats()
         
-        # 计算额外的指标
+        # Calculate additional metrics
         total_requests = sum(k.total_requests for k in key_manager.keys.values())
         total_successes = sum(k.successful_requests for k in key_manager.keys.values())
         overall_success_rate = (total_successes / total_requests * 100) if total_requests > 0 else 0
         
+        # Get performance metrics
+        perf_stats = get_performance_stats()
+        
+        # Get error monitoring stats
+        error_stats = await error_monitor.get_error_stats()
+        
         return {
-            **stats,
+            "key_manager_stats": stats,
             "overall_success_rate": round(overall_success_rate, 2),
             "total_requests": total_requests,
             "total_successes": total_successes,
             "service_uptime": time.time() - app.state.start_time if hasattr(app.state, 'start_time') else 0,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "performance_metrics": perf_stats,
+            "error_metrics": error_stats
         }
     except Exception as e:
         logger.error(f"Metrics retrieval failed: {e}")
         raise HTTPException(status_code=500, detail="Metrics retrieval failed")
+
+@app.get("/cache/stats", dependencies=[Depends(verify_api_key)])
+async def get_cache_stats(client_key: str = Depends(verify_api_key)):
+    """Get cache statistics"""
+    try:
+        return response_cache.get_stats()
+    except Exception as e:
+        logger.error(f"Cache stats retrieval failed: {e}")
+        raise HTTPException(status_code=500, detail="Cache stats retrieval failed")
+
+@app.post("/cache/clear", dependencies=[Depends(verify_admin_key)])
+async def clear_cache(admin_key: str = Depends(verify_admin_key)):
+    """Clear cache"""
+    try:
+        response_cache.clear()
+        return {"message": "Cache cleared successfully"}
+    except Exception as e:
+        logger.error(f"Cache clear failed: {e}")
+        raise HTTPException(status_code=500, detail="Cache clear failed")
+
+@app.get("/errors/recent", dependencies=[Depends(verify_admin_key)])
+async def get_recent_errors(admin_key: str = Depends(verify_admin_key), limit: int = 50):
+    """Get recent errors for admin monitoring"""
+    try:
+        return await error_monitor.get_recent_errors(limit)
+    except Exception as e:
+        logger.error(f"Recent errors retrieval failed: {e}")
+        raise HTTPException(status_code=500, detail="Recent errors retrieval failed")
+
+@app.get("/health/detailed", dependencies=[Depends(verify_api_key)])
+async def detailed_health_check(client_key: str = Depends(verify_api_key)):
+    """Detailed health check with optimization metrics"""
+    if not key_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        # Basic health check
+        stats = await key_manager.get_stats()
+        basic_healthy = stats["active_keys"] > 0
+        
+        # Check cache health
+        cache_stats = response_cache.get_stats()
+        cache_healthy = cache_stats["hit_rate"] > 0.1  # At least 10% hit rate
+        
+        # Check HTTP client health
+        http_stats = http_client.get_stats()
+        http_healthy = http_stats["error_rate"] < 5  # Less than 5% error rate
+        
+        # Overall health status
+        overall_healthy = basic_healthy and cache_healthy and http_healthy
+        
+        return {
+            "status": "healthy" if overall_healthy else "degraded",
+            "components": {
+                "key_manager": {"healthy": basic_healthy, "active_keys": stats["active_keys"]},
+                "cache": {"healthy": cache_healthy, "hit_rate": cache_stats["hit_rate"]},
+                "http_client": {"healthy": http_healthy, "error_rate": http_stats["error_rate"]}
+            },
+            "timestamp": datetime.now().isoformat(),
+            "version": "2.1.0"
+        }
+    except Exception as e:
+        logger.error(f"Detailed health check failed: {e}")
+        raise HTTPException(status_code=500, detail="Health check failed")
 
 # 在应用启动时记录启动时间
 @app.on_event("startup")

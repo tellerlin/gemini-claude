@@ -1,4 +1,4 @@
-# Gemini Claude Adapter
+# Gemini Claude Adapter v2.1.0
 
 高性能的 Gemini Claude 适配器，专为 Claude Code 和本地客户端设计，支持多 API 密钥轮换、自动故障恢复和流式响应。
 
@@ -6,13 +6,22 @@
 
 ## ✨ 核心特性
 
--   🚀 **极速响应** - 优化的请求处理和密钥轮换算法
--   🔑 **智能密钥管理** - 失败密钥立即冷却，自动切换到下一个可用密钥
--   🛡️ **强大安全性** - 强制 API 密钥认证，支持客户端和管理员密钥
--   🌐 **完全兼容** - 兼容 Claude Code (Anthropic API 格式) 和 OpenAI API 格式
--   ⚡ **流式支持** - 原生支持流式聊天响应
--   📊 **实时监控** - 详细的服务状态和密钥使用统计
--   🐳 **简化 Docker 部署** - 使用 Docker 和 Docker Compose 快速安全部署
+-   🤖 **完整 Anthropic API 兼容性** - 完全支持 Anthropic Messages API (`/v1/messages`)，包含正确的流式格式
+-   🔑 **智能密钥管理** - 失败的 Gemini 密钥立即进入冷却期，自动故障转移到下一个可用密钥
+-   🛡️ **强大安全性** - 对所有敏感端点强制执行 API 密钥认证，使用客户端和管理员密钥
+-   🌐 **双 API 支持** - 兼容 Anthropic 和 OpenAI API 格式，实现最大灵活性
+-   ⚡ **流式支持** - 原生支持 Anthropic 风格的流式响应，包含所有必需的事件类型
+-   🛠️ **工具调用支持** - Anthropic 和 Gemini 格式之间的完整工具/函数调用支持
+-   📊 **实时监控** - 服务健康、密钥状态和使用统计的端点
+-   🐳 **简化 Docker 部署** - 使用 Docker 和 Docker Compose 快速安全设置
+
+### 🚀 v2.1.0 新特性
+
+-   **性能优化** - 智能响应缓存和 HTTP 连接池
+-   **增强错误处理** - 智能错误分类和断路器模式
+-   **高级监控** - 综合指标收集和性能跟踪
+-   **结构化配置** - 具有环境支持的分层配置系统
+-   **改进可靠性** - 更好的容错和自动恢复机制
 
 ## 🔒 安全优先：理解认证机制
 
@@ -25,70 +34,91 @@
 
 认证通过 `X-API-Key` 头或 `Authorization: Bearer <token>` 头处理。
 
-## 🚀 使用 Docker 部署（推荐）
-
-使用 Docker 部署是最简单和安全的方法。
+## 🚀 快速开始指南
 
 ### 先决条件
 
--   Git
--   Docker
--   Docker Compose
+-   **Docker** 和 **Docker Compose** 已安装在您的系统上
+-   **Google Gemini API 密钥** ([在此获取](https://makersuite.google.com/app/apikey))
+-   **Git** 用于克隆仓库
 
-### 步骤 1：克隆仓库
+### 步骤 1：获取您的 API 密钥
+
+1. 访问 [Google AI Studio](https://makersuite.google.com/app/apikey)
+2. 使用您的 Google 账户登录
+3. 创建一个或多个 API 密钥
+4. 复制密钥（以 `AIza...` 开头）
+
+### 步骤 2：部署服务
 
 ```bash
+# 克隆仓库
 git clone https://github.com/tellerlin/gemini-claude.git
 cd gemini-claude
+
+# 复制并配置环境变量
+cp .env.example .env
+
+# 编辑配置（参见下面的配置部分）
+nano .env  # 或使用您喜欢的编辑器
+
+# 启动服务
+docker-compose up -d
+
+# 检查是否正在运行
+docker-compose ps
+docker-compose logs -f
 ```
 
-### 步骤 2：配置环境变量
+服务将在 `http://localhost:8000`（或您服务器的 IP）可用。
 
-通过复制示例创建 `.env` 文件。此文件将存储您的所有秘密和配置。
+### 步骤 3：测试您的部署
 
 ```bash
-cp .env.example .env
+# 基本健康检查（无需认证）
+curl http://localhost:8000/health
+
+# 使用您的 API 密钥测试
+curl http://localhost:8000/v1/models \
+  -H "Authorization: Bearer your-client-key-123"
 ```
 
-现在，使用文本编辑器（`nano .env` 或 `vim .env`）编辑 `.env` 文件并填写必需的值。
+## ⚙️ 基本配置
+
+编辑您的 `.env` 文件，使用这些**必需**的设置：
 
 ```env
-# .env
+# =============================================
+# 必需：Gemini API 配置
+# =============================================
+# 从以下获取您的 API 密钥：https://makersuite.google.com/app/apikey
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...,AIzaSyGHI789...
 
-# --- Gemini API 密钥 ---
-# 在此处添加您的 Gemini API 密钥，用逗号分隔。
-# 示例：GEMINI_API_KEYS=AIzaSyABC...,AIzaSyDEF...
-GEMINI_API_KEYS=
+# =============================================
+# 必需：安全配置
+# =============================================
+# 生成强密钥：openssl rand -hex 32
+SECURITY_ADAPTER_API_KEYS=your-client-key-123,your-client-key-456
 
-# --- 适配器安全密钥 ---
-# 生产环境必需。这些密钥供您的客户端（如 Claude Code）用于访问适配器。
-# 使用 'openssl rand -hex 32' 生成强密钥
-# 示例：ADAPTER_API_KEYS=client-key-123,client-key-456
-ADAPTER_API_KEYS=
+# =============================================
+# 可选：管理员访问
+# =============================================
+# 管理端点的可选管理员密钥
+SECURITY_ADMIN_API_KEYS=your-admin-key-abc,your-admin-key-def
 
-# 可选但推荐：用于管理员访问的单独密钥。
-# 示例：ADMIN_API_KEYS=admin-key-abc,admin-key-def
-ADMIN_API_KEYS=
-
-# --- 网络配置 ---
-# 服务在 Docker 容器内运行的主机和端口。
-HOST=0.0.0.0
-PORT=8000
-
-# --- 密钥管理 ---
-# Gemini 密钥被冷却前的连续失败次数。
-MAX_FAILURES=1
-# 失败的 Gemini 密钥的冷却时间（秒）。
-COOLING_PERIOD=300
-# 请求超时时间（秒）。
-REQUEST_TIMEOUT=45
-
-# --- 代理（可选）---
-# 如果需要通过代理路由 Gemini API 流量，取消注释并设置 URL。
-# PROXY_URL=http://your-proxy-url:port
+# =============================================
+# 可选：服务配置
+# =============================================
+SERVICE_HOST=0.0.0.0
+SERVICE_PORT=8000
+SERVICE_LOG_LEVEL=INFO
 ```
 
-**重要提示**：保护您的 `.env` 文件。它包含敏感密钥。
+**⚠️ 重要安全说明：**
+- 保护您的 `.env` 文件，切勿提交到版本控制
+- 为 `SECURITY_ADAPTER_API_KEYS` 使用强而唯一的 API 密钥
+- 为生产环境设置 `SECURITY_ADMIN_API_KEYS`
+- 使用以下方式生成安全密钥：`openssl rand -hex 32`
 
 ### 步骤 3：启动服务
 
@@ -228,24 +258,32 @@ PROXY_URL=http://proxy.example.com:8080
 
 ## 📡 API 端点
 
-### 公开端点
-*无需认证。*
+### 主要端点（需要认证）
 
--   `GET /`：返回基本服务信息。
--   `GET /health`：用于监控的健康检查端点。如果至少有一个 Gemini 密钥处于活动状态，则返回 `200 OK`。
+| 端点 | 方法 | 描述 |
+|------|------|------|
+| `/v1/messages` | POST | **主要 Anthropic Messages API** - 完全兼容 |
+| `/v1/messages/count_tokens` | POST | 发送前计算令牌数 |
+| `/v1/models` | GET | 列出可用模型 |
+| `/v1/chat/completions` | POST | OpenAI 兼容端点（遗留） |
+| `/stats` | GET | 使用统计 |
+| `/metrics` | GET | 详细性能指标 |
 
-### 受保护端点
-*需要**客户端 API 密钥**（`X-API-Key` 或 `Bearer` 令牌）。*
+### 管理员端点（需要管理员密钥）
 
--   `POST /v1/chat/completions`：聊天完成的主要端点。
--   `GET /v1/models`：列出适配器中配置的可用 Gemini 模型。
--   `GET /stats`：返回有关密钥使用情况、失败和状态的详细统计信息。
+| 端点 | 方法 | 描述 |
+|------|------|------|
+| `/admin/reset-key/{prefix}` | POST | 重置失败的密钥 |
+| `/admin/recover-key/{prefix}` | POST | 恢复永久失败的密钥 |
+| `/admin/security-status` | GET | 安全配置状态 |
 
-### 管理员端点
-*需要**管理员 API 密钥**。*
+### 公开端点（无需认证）
 
--   `POST /admin/reset-key/{key_prefix}`：手动将失败或冷却的 Gemini 密钥重置回活动状态。`key_prefix` 必须至少为 4 个字符。
--   `GET /admin/security-status`：显示适配器的当前安全配置。
+| 端点 | 方法 | 描述 |
+|------|------|------|
+| `/` | GET | 服务信息 |
+| `/health` | GET | 基本健康检查 |
+| `/health/detailed` | GET | 详细健康状态 |
 
 #### 示例：使用 `curl` 检查统计信息
 
@@ -275,17 +313,93 @@ curl -X POST http://localhost:8000/admin/reset-key/AIza \
 gemini-claude/
 ├── main.py                 # 开发入口点
 ├── src/
-│   └── main.py            # FastAPI 应用程序（主服务器）
-├── requirements.txt       # Python 依赖
-├── .env.example          # 环境配置模板
-├── docker-compose.yml    # Docker Compose 配置
-├── Dockerfile            # Docker 镜像配置
-├── logs/                 # 应用日志
-├── README.md             # 主要项目文档（英文）
-├── README.zh.md          # 中文文档
-├── CLAUDE.md             # Claude Code 项目说明
-└── security_guide.md     # 安全配置指南
+│   ├── main.py            # FastAPI 应用服务器
+│   ├── anthropic_api.py   # Anthropic API 兼容层
+│   ├── config.py          # 配置管理
+│   ├── error_handling.py  # 增强错误处理
+│   └── performance.py     # 性能优化
+├── requirements.txt        # Python 依赖
+├── .env.example           # 配置模板
+├── docker-compose.yml     # Docker 部署配置
+├── Dockerfile             # Docker 镜像配置
+├── logs/                  # 应用日志（自动创建）
+└── README.md              # 此文件
 ```
+
+## 🔒 安全最佳实践
+
+1. **使用强 API 密钥**：使用 `openssl rand -hex 32` 生成
+2. **分离管理员密钥**：为 `SECURITY_ADMIN_API_KEYS` 设置不同的密钥
+3. **保护您的服务器**：使用防火墙规则限制访问
+4. **监控访问**：定期检查日志以发现未授权的尝试
+5. **保持更新**：定期使用 `git pull && docker-compose up -d --build` 拉取更新
+
+## 📊 高级配置
+
+<details>
+<summary>点击展开完整配置选项</summary>
+
+```env
+# =============================================
+# 服务配置
+# =============================================
+SERVICE_ENVIRONMENT=production
+SERVICE_HOST=0.0.0.0
+SERVICE_PORT=8000
+SERVICE_WORKERS=1
+SERVICE_LOG_LEVEL=INFO
+SERVICE_ENABLE_METRICS=true
+SERVICE_ENABLE_HEALTH_CHECK=true
+SERVICE_CORS_ORIGINS=*
+
+# =============================================
+# Gemini API 配置
+# =============================================
+GEMINI_API_KEYS=AIzaSyABC123...,AIzaSyDEF456...
+GEMINI_MAX_FAILURES=3
+GEMINI_COOLING_PERIOD=300
+GEMINI_HEALTH_CHECK_INTERVAL=60
+GEMINI_REQUEST_TIMEOUT=45
+GEMINI_MAX_RETRIES=2
+GEMINI_PROXY_URL=http://proxy.example.com:8080
+
+# =============================================
+# 安全配置
+# =============================================
+SECURITY_ADAPTER_API_KEYS=your-client-key-123,your-client-key-456
+SECURITY_ADMIN_API_KEYS=your-admin-key-abc,your-admin-key-def
+SECURITY_ENABLE_IP_BLOCKING=true
+SECURITY_MAX_FAILED_ATTEMPTS=5
+SECURITY_BLOCK_DURATION=300
+SECURITY_ENABLE_RATE_LIMITING=true
+SECURITY_RATE_LIMIT_REQUESTS=100
+SECURITY_RATE_LIMIT_WINDOW=60
+
+# =============================================
+# 性能优化
+# =============================================
+CACHE_ENABLED=true
+CACHE_MAX_SIZE=1000
+CACHE_TTL=300
+CACHE_KEY_PREFIX=gemini_adapter
+
+PERF_MAX_KEEPALIVE_CONNECTIONS=20
+PERF_MAX_CONNECTIONS=100
+PERF_KEEPALIVE_EXPIRY=30.0
+PERF_CONNECT_TIMEOUT=10.0
+PERF_READ_TIMEOUT=45.0
+PERF_WRITE_TIMEOUT=10.0
+PERF_POOL_TIMEOUT=5.0
+PERF_HTTP2_ENABLED=true
+
+# =============================================
+# 可选 Redis 配置
+# =============================================
+REDIS_URL=redis://localhost:6379/0
+REDIS_PASSWORD=your-redis-password
+```
+
+</details>
 
 ---
 
