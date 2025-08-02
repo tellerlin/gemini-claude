@@ -154,17 +154,17 @@ class ServiceConfig(BaseModel):
 
 class AppConfig(BaseSettings):
     """Main application configuration"""
-    # Initialize with default factories to avoid parsing issues
-    gemini: GeminiConfig = Field(default_factory=GeminiConfig)
-    security: SecurityConfig = Field(default_factory=SecurityConfig)
-    cache: CacheConfig = Field(default_factory=CacheConfig)
-    performance: PerformanceConfig = Field(default_factory=PerformanceConfig)
-    service: ServiceConfig = Field(default_factory=ServiceConfig)
-    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    # 移除 default_factory，让 pydantic-settings 自动处理嵌套模型
+    gemini: GeminiConfig
+    security: SecurityConfig
+    cache: CacheConfig
+    performance: PerformanceConfig
+    service: ServiceConfig
+    database: DatabaseConfig
     
     model_config = SettingsConfigDict(
         env_file=".env",
-        env_nested_delimiter="__",
+        env_nested_delimiter="__",  # 确保双下划线作为分隔符
         case_sensitive=False,
         extra="ignore"  # Ignore extra fields to prevent parsing errors
     )
@@ -236,16 +236,25 @@ class AppConfig(BaseSettings):
         logger.info(f"Metrics: {'Enabled' if self.service.enable_metrics else 'Disabled'}")
         logger.info("=================================")
 
-# Alternative configuration loader that handles env vars manually if needed
-def load_config_from_env() -> AppConfig:
-    """Load configuration with manual environment variable handling as fallback"""
+# Global configuration instance
+_config: Optional[AppConfig] = None
+
+def load_configuration() -> AppConfig:
+    """Load and validate configuration"""
+    global _config
     try:
-        # Try standard pydantic-settings loading first
-        return AppConfig()
+        _config = AppConfig()
+        _config.log_configuration()
+        return _config
     except Exception as e:
-        logger.warning(f"Standard config loading failed: {e}. Trying manual env loading...")
-        
-        # Manual environment variable loading as fallback
+        logger.error(f"Failed to load configuration: {e}")
+        # 如果标准加载失败，尝试手动环境变量加载作为备用方案
+        logger.warning("Attempting fallback configuration loading...")
+        return load_config_from_env_fallback()
+
+def load_config_from_env_fallback() -> AppConfig:
+    """备用配置加载器，手动处理环境变量"""
+    try:
         gemini_config = GeminiConfig(
             api_keys=os.getenv('GEMINI__API_KEYS', '').split(',') if os.getenv('GEMINI__API_KEYS') else [],
             proxy_url=os.getenv('GEMINI__PROXY_URL'),
@@ -305,7 +314,7 @@ def load_config_from_env() -> AppConfig:
             redis_max_connections=int(os.getenv('DATABASE__REDIS_MAX_CONNECTIONS', '10'))
         )
         
-        # Create config manually
+        # 创建配置实例
         config = AppConfig.model_construct(
             gemini=gemini_config,
             security=security_config,
@@ -315,22 +324,12 @@ def load_config_from_env() -> AppConfig:
             database=database_config
         )
         
-        # Manually trigger post-init validation
+        # 手动触发验证
         config._validate_config()
         return config
-
-# Global configuration instance
-_config: Optional[AppConfig] = None
-
-def load_configuration() -> AppConfig:
-    """Load and validate configuration"""
-    global _config
-    try:
-        _config = load_config_from_env()
-        _config.log_configuration()
-        return _config
+        
     except Exception as e:
-        logger.error(f"Failed to load configuration: {e}")
+        logger.error(f"Fallback configuration loading also failed: {e}")
         raise
 
 def get_config() -> AppConfig:
