@@ -13,21 +13,17 @@ import httpx
 from cachetools import TTLCache
 import logging
 from contextlib import asynccontextmanager
-from collections import deque, defaultdict # Added deque
+from collections import deque, defaultdict
+
+# +++ Import the centralized config classes and loader +++
+from .config import get_config, CacheConfig, PerformanceConfig
 
 logger = logging.getLogger(__name__)
-
-@dataclass
-class CacheConfig:
-    """Configuration for response caching"""
-    enabled: bool = True
-    max_size: int = 1000
-    ttl: int = 300  # 5 minutes
-    key_prefix: str = "gemini_adapter"
 
 class ResponseCache:
     """Intelligent response caching system with two-tier strategy"""
     
+    # +++ Use the imported CacheConfig for type hinting +++
     def __init__(self, config: CacheConfig):
         self.config = config
         # Two-tier caching strategy
@@ -131,28 +127,17 @@ class ResponseCache:
     def clear(self) -> None:
         """Clear all cached responses"""
         self.cache.clear()
+        # CORRECTED: Clear the frequent_cache as well
+        self.frequent_cache.clear()
         self.hit_count = 0
         self.miss_count = 0
         logger.info("Cache cleared")
 
-@dataclass
-class HTTPClientConfig:
-    """Configuration for HTTP client"""
-    max_keepalive_connections: int = 50  # Increased from 20
-    max_connections: int = 200           # Increased from 100
-    keepalive_expiry: float = 60.0       # Increased from 30.0
-    connect_timeout: float = 5.0         # Decreased from 10.0
-    read_timeout: float = 30.0           # Decreased from 45.0
-    write_timeout: float = 10.0
-    pool_timeout: float = 2.0            # Decreased from 5.0
-    http2: bool = True
-    trust_env: bool = True                # Added for proxy support
-    verify_ssl: bool = True              # Added SSL control
-
 class OptimizedHTTPClient:
     """Optimized HTTP client with enhanced connection pooling and performance monitoring"""
     
-    def __init__(self, config: HTTPClientConfig):
+    # +++ Use the imported PerformanceConfig for type hinting +++
+    def __init__(self, config: PerformanceConfig):
         self.config = config
         self.client: Optional[httpx.AsyncClient] = None
         self.request_count = 0
@@ -183,7 +168,8 @@ class OptimizedHTTPClient:
                 self.client = httpx.AsyncClient(
                     limits=limits,
                     timeout=timeout,
-                    http2=self.config.http2,
+                    # +++ Use the correct field name from PerformanceConfig +++
+                    http2=self.config.http2_enabled,
                     trust_env=self.config.trust_env,
                     verify=self.config.verify_ssl
                 )
@@ -199,6 +185,7 @@ class OptimizedHTTPClient:
     
     async def request(self, method: str, url: str, **kwargs) -> httpx.Response:
         """Make an HTTP request with performance monitoring"""
+        # CORRECTED: Ensure client is initialized before use for robustness
         if not self.client:
             await self.initialize()
         
@@ -206,6 +193,7 @@ class OptimizedHTTPClient:
         self.request_count += 1
         
         try:
+            # +++ This ensures the client is not None before making a request +++
             response = await self.client.request(method, url, **kwargs)
             request_time = time.time() - start_time
             self.total_request_time += request_time
@@ -234,7 +222,8 @@ class OptimizedHTTPClient:
             "config": {
                 "max_keepalive_connections": self.config.max_keepalive_connections,
                 "max_connections": self.config.max_connections,
-                "http2_enabled": self.config.http2
+                # +++ Use the correct field name from PerformanceConfig +++
+                "http2_enabled": self.config.http2_enabled
             }
         }
 
@@ -376,11 +365,13 @@ class BatchProcessor:
         # Implement the specific processing logic here
         pass
 
-# Global instances
-response_cache = ResponseCache(CacheConfig())
-http_client = OptimizedHTTPClient(HTTPClientConfig())
+# +++ Initialize global instances using the centralized configuration loader +++
+app_config = get_config()
+response_cache = ResponseCache(app_config.cache)
+http_client = OptimizedHTTPClient(app_config.performance)
 performance_monitor = PerformanceMonitor()
 batch_processor = BatchProcessor()
+
 
 @asynccontextmanager
 async def monitor_performance(endpoint: str):

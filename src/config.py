@@ -32,9 +32,6 @@ class DatabaseConfig(BaseSettings):
     redis_password: Optional[SecretStr] = Field(None, description="Redis password")
     redis_db: int = Field(0, description="Redis database number")
     redis_max_connections: int = Field(10, description="Maximum Redis connections")
-    
-    class Config:
-        env_prefix = "DATABASE_"
 
 class SecurityConfig(BaseSettings):
     """Security configuration"""
@@ -51,18 +48,23 @@ class SecurityConfig(BaseSettings):
     def validate_adapter_keys(cls, v):
         """Validate and clean adapter API keys"""
         if isinstance(v, str):
+            # Handle comma-separated string
             v = [key.strip() for key in v.split(',') if key.strip()]
+        elif isinstance(v, list):
+            # Handle list (from JSON parsing)
+            v = [key.strip() for key in v if key.strip()]
         return [key.strip() for key in v if key.strip()]
     
     @field_validator('admin_api_keys', mode='before')
     def validate_admin_keys(cls, v):
         """Validate and clean admin API keys"""
         if isinstance(v, str):
+            # Handle comma-separated string
             v = [key.strip() for key in v.split(',') if key.strip()]
+        elif isinstance(v, list):
+            # Handle list (from JSON parsing)
+            v = [key.strip() for key in v if key.strip()]
         return [key.strip() for key in v if key.strip()]
-    
-    class Config:
-        env_prefix = "SECURITY_"
 
 class GeminiConfig(BaseSettings):
     """Gemini API configuration"""
@@ -78,7 +80,11 @@ class GeminiConfig(BaseSettings):
     def validate_api_keys(cls, v):
         """Validate and clean Gemini API keys"""
         if isinstance(v, str):
+            # Handle comma-separated string
             v = [key.strip() for key in v.split(',') if key.strip()]
+        elif isinstance(v, list):
+            # Handle list (from JSON parsing)
+            v = [key.strip() for key in v if key.strip()]
         
         valid_keys = []
         for key in v:
@@ -95,9 +101,6 @@ class GeminiConfig(BaseSettings):
             logger.warning(f"Potentially invalid API keys detected: {len(invalid_keys)} keys don't start with 'AIza'")
         
         return valid_keys
-    
-    class Config:
-        env_prefix = "GEMINI_"
 
 class CacheConfig(BaseSettings):
     """Cache configuration"""
@@ -105,9 +108,6 @@ class CacheConfig(BaseSettings):
     max_size: int = Field(1000, description="Maximum cache size")
     ttl: int = Field(300, description="Cache TTL in seconds")
     key_prefix: str = Field("gemini_adapter", description="Cache key prefix")
-    
-    class Config:
-        env_prefix = "CACHE_"
 
 class PerformanceConfig(BaseSettings):
     """Performance configuration"""
@@ -119,9 +119,9 @@ class PerformanceConfig(BaseSettings):
     write_timeout: float = Field(10.0, description="Write timeout")
     pool_timeout: float = Field(5.0, description="Pool timeout")
     http2_enabled: bool = Field(True, description="Enable HTTP/2")
-    
-    class Config:
-        env_prefix = "PERF_"
+    # +++ Add missing fields to match OptimizedHTTPClient +++
+    trust_env: bool = Field(True, description="Trust environment for proxy support")
+    verify_ssl: bool = Field(True, description="Verify SSL certificates")
 
 class ServiceConfig(BaseSettings):
     """Service configuration"""
@@ -133,9 +133,6 @@ class ServiceConfig(BaseSettings):
     enable_metrics: bool = Field(True, description="Enable metrics collection")
     enable_health_check: bool = Field(True, description="Enable health check endpoint")
     cors_origins: List[str] = Field(["*"], description="CORS allowed origins")
-    
-    class Config:
-        env_prefix = "SERVICE_"
 
 class AppConfig(BaseSettings):
     """Main application configuration"""
@@ -148,6 +145,7 @@ class AppConfig(BaseSettings):
     
     class Config:
         env_file = ".env"
+        # +++ This is the crucial fix for loading nested configs like PERFORMANCE__* +++
         env_nested_delimiter = "__"
         case_sensitive = False
     
@@ -172,7 +170,7 @@ class AppConfig(BaseSettings):
         
         logger.info(f"Configuration validated for {self.service.environment.value} environment")
     
-    # ... (其余方法保持不变) ...
+    # ... (remaining methods are unchanged) ...
     def get_security_status(self) -> Dict[str, Any]:
         """Get security configuration status"""
         return {
@@ -219,7 +217,7 @@ class AppConfig(BaseSettings):
         logger.info(f"Metrics: {'Enabled' if self.service.enable_metrics else 'Disabled'}")
         logger.info("=================================")
 
-# ... (其余函数保持不变) ...
+# ... (remaining functions are unchanged) ...
 
 def load_configuration() -> AppConfig:
     """Load and validate configuration"""
