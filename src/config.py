@@ -4,7 +4,7 @@ Enhanced configuration management for Gemini Claude Adapter
 
 import os
 from typing import List, Optional, Dict, Any, Union
-from pydantic import Field, validator, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 from enum import Enum
 import json
@@ -47,7 +47,7 @@ class SecurityConfig(BaseSettings):
     rate_limit_requests: int = Field(100, description="Rate limit requests per window")
     rate_limit_window: int = Field(60, description="Rate limit window in seconds")
     
-    @validator('adapter_api_keys', pre=True)
+    @field_validator('adapter_api_keys', mode='before')
     def validate_adapter_keys(cls, v):
         """Validate and clean adapter API keys"""
         if isinstance(v, str):
@@ -55,7 +55,7 @@ class SecurityConfig(BaseSettings):
             v = [key.strip() for key in v.split(',') if key.strip()]
         return [key.strip() for key in v if key.strip()]
     
-    @validator('admin_api_keys', pre=True)
+    @field_validator('admin_api_keys', mode='before')
     def validate_admin_keys(cls, v):
         """Validate and clean admin API keys"""
         if isinstance(v, str):
@@ -76,7 +76,7 @@ class GeminiConfig(BaseSettings):
     request_timeout: int = Field(45, description="Request timeout in seconds", ge=10)
     max_retries: int = Field(2, description="Maximum retry attempts", ge=0)
     
-    @validator('api_keys', pre=True)
+    @field_validator('api_keys', mode='before')
     def validate_api_keys(cls, v):
         """Validate and clean Gemini API keys"""
         if isinstance(v, str):
