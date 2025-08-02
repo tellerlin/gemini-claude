@@ -48,15 +48,10 @@ except ImportError:
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure logging with improved format
-os.makedirs("logs", exist_ok=True)
-logger.add(
-    "logs/gemini_adapter_{time}.log",
-    rotation="1 day",
-    retention="7 days",
-    level="INFO",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
-)
+# [MODIFIED] The conflicting module-level logger configuration has been removed.
+# Logging will now be configured only inside the lifespan function, which is the correct
+# approach for a multi-process Gunicorn setup.
+
 
 class KeyStatus(Enum):
     ACTIVE = "active"
