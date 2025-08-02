@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from collections import defaultdict, deque
 
-# Import using relative paths, which is the correct way for a package
+# 使用相对路径导入，这是作为Python包的标准做法
 from .config import get_config, AppConfig, GeminiConfig
 from .error_handling import error_monitor, monitor_errors
 from .performance import response_cache, http_client, performance_monitor, monitor_performance, get_performance_stats
@@ -29,18 +29,10 @@ from .anthropic_api import (
     StreamingResponseGenerator,
 )
 
-# Load environment variables from .env file
+# 加载 .env 文件中的环境变量
 load_dotenv()
 
-# Configure logging with improved format
-os.makedirs("logs", exist_ok=True)
-logger.add(
-    "logs/gemini_adapter_{time}.log",
-    rotation="1 day",
-    retention="7 days",
-    level="INFO",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
-)
+# --- 注意：日志初始化代码已从这里移除 ---
 
 class KeyStatus(Enum):
     ACTIVE = "active"
@@ -198,7 +190,6 @@ class GeminiKeyManager:
                     return {"message": f"Key starting with {key_prefix} has been reset to active."}
             raise HTTPException(status_code=404, detail=f"No key found with prefix {key_prefix}.")
 
-
 class LiteLLMAdapter:
     def __init__(self, config: GeminiConfig, key_manager: GeminiKeyManager):
         self.config = config
@@ -219,10 +210,10 @@ class LiteLLMAdapter:
         keys_to_try = list(self.key_manager.keys.keys())
         random.shuffle(keys_to_try)
 
-        for key in keys_to_try:
+        for _ in range(self.config.max_retries + 1):
             key_info = await self.key_manager.get_available_key()
             if not key_info:
-                continue # Skip if no key is available right now
+                 continue # No key available right now, retry might get one later
             
             try:
                 kwargs = {
@@ -265,17 +256,30 @@ adapter: Optional[LiteLLMAdapter] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global key_manager, adapter, security_manager
+    
+    # --- 新增：在这里初始化日志 ---
+    os.makedirs("logs", exist_ok=True)
+    logger.add(
+        "logs/gemini_adapter_{time}.log",
+        rotation="1 day",
+        retention="7 days",
+        level="INFO",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}",
+        enqueue=True, # Important for multiprocessing
+        catch=True
+    )
+    
     try:
         app_config = get_config()
         security_manager = SecurityManager(app_config)
         key_manager = GeminiKeyManager(app_config.gemini)
         adapter = LiteLLMAdapter(app_config.gemini, key_manager)
-        logger.info("Gemini Claude Adapter started successfully.")
+        logger.info("Gemini Claude Adapter worker started successfully.")
         yield
     except Exception as e:
         logger.critical(f"Fatal error during application startup: {e}", exc_info=True)
     finally:
-        logger.info("Gemini Claude Adapter shutting down.")
+        logger.info("Gemini Claude Adapter worker shutting down.")
 
 app = FastAPI(
     title="Gemini Claude Adapter",
