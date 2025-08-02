@@ -32,7 +32,9 @@ class DatabaseConfig(BaseSettings):
     redis_password: Optional[SecretStr] = Field(None, description="Redis password")
     redis_db: int = Field(0, description="Redis database number")
     redis_max_connections: int = Field(10, description="Maximum Redis connections")
-    # 删除了这里的 class Config
+    
+    class Config:
+        env_prefix = "DATABASE_"
 
 class SecurityConfig(BaseSettings):
     """Security configuration"""
@@ -58,7 +60,9 @@ class SecurityConfig(BaseSettings):
         if isinstance(v, str):
             v = [key.strip() for key in v.split(',') if key.strip()]
         return [key.strip() for key in v if key.strip()]
-    # 删除了这里的 class Config
+    
+    class Config:
+        env_prefix = "SECURITY_"
 
 class GeminiConfig(BaseSettings):
     """Gemini API configuration"""
@@ -91,7 +95,9 @@ class GeminiConfig(BaseSettings):
             logger.warning(f"Potentially invalid API keys detected: {len(invalid_keys)} keys don't start with 'AIza'")
         
         return valid_keys
-    # 删除了这里的 class Config
+    
+    class Config:
+        env_prefix = "GEMINI_"
 
 class CacheConfig(BaseSettings):
     """Cache configuration"""
@@ -99,7 +105,9 @@ class CacheConfig(BaseSettings):
     max_size: int = Field(1000, description="Maximum cache size")
     ttl: int = Field(300, description="Cache TTL in seconds")
     key_prefix: str = Field("gemini_adapter", description="Cache key prefix")
-    # 删除了这里的 class Config
+    
+    class Config:
+        env_prefix = "CACHE_"
 
 class PerformanceConfig(BaseSettings):
     """Performance configuration"""
@@ -111,7 +119,9 @@ class PerformanceConfig(BaseSettings):
     write_timeout: float = Field(10.0, description="Write timeout")
     pool_timeout: float = Field(5.0, description="Pool timeout")
     http2_enabled: bool = Field(True, description="Enable HTTP/2")
-    # 删除了这里的 class Config
+    
+    class Config:
+        env_prefix = "PERF_"
 
 class ServiceConfig(BaseSettings):
     """Service configuration"""
@@ -123,7 +133,9 @@ class ServiceConfig(BaseSettings):
     enable_metrics: bool = Field(True, description="Enable metrics collection")
     enable_health_check: bool = Field(True, description="Enable health check endpoint")
     cors_origins: List[str] = Field(["*"], description="CORS allowed origins")
-    # 删除了这里的 class Config
+    
+    class Config:
+        env_prefix = "SERVICE_"
 
 class AppConfig(BaseSettings):
     """Main application configuration"""
