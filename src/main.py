@@ -2,7 +2,6 @@ import asyncio
 import time
 import random
 import os
-import sys
 from typing import List, Dict, Optional, Any, Union, Set, Tuple, AsyncGenerator
 from dataclasses import dataclass
 from enum import Enum
@@ -11,7 +10,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from loguru import logger
 import litellm
 from contextlib import asynccontextmanager
@@ -20,25 +19,25 @@ from dotenv import load_dotenv
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from collections import defaultdict, deque
 
-# 使用相对路径导入，这是作为Python包的标准做法
+# Import using relative paths, which is the correct way for a package
 from .config import get_config, AppConfig, GeminiConfig
-from .error_handling import error_monitor, monitor_errors, ErrorClassifier
+from .error_handling import error_monitor, monitor_errors
 from .performance import response_cache, http_client, performance_monitor, monitor_performance, get_performance_stats
 from .anthropic_api import (
-    MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
-    AnthropicToGeminiConverter, GeminiToAnthropicConverter, 
-    StreamingResponseGenerator, ToolConverter, log_request_beautifully
+    MessagesRequest, MessagesResponse,
+    AnthropicToGeminiConverter, GeminiToAnthropicConverter,
+    StreamingResponseGenerator,
 )
 
-# 加载 .env 文件中的环境变量
+# Load environment variables from .env file
 load_dotenv()
 
-# 配置日志记录
+# Configure logging with improved format
 os.makedirs("logs", exist_ok=True)
 logger.add(
-    "logs/gemini_adapter_{time}.log", 
-    rotation="1 day", 
-    retention="7 days", 
+    "logs/gemini_adapter_{time}.log",
+    rotation="1 day",
+    retention="7 days",
     level="INFO",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
 )
@@ -63,8 +62,17 @@ class ChatRequest(BaseModel):
     messages: List[Dict[str, str]]
     model: str = "gemini-2.5-pro"
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0)
-    max_tokens: Optional[int] = Field(None, ge=1, le=8192)
+    max_tokens: Optional[int] = Field(None, ge=1)
     stream: bool = False
+    
+    @field_validator('messages')
+    def validate_messages(cls, v):
+        if not v:
+            raise ValueError("Messages cannot be empty")
+        for msg in v:
+            if 'role' not in msg or 'content' not in msg:
+                raise ValueError("Each message must have 'role' and 'content' fields")
+        return v
 
 class SecurityManager:
     def __init__(self, app_config: AppConfig):
@@ -115,7 +123,6 @@ async def verify_admin_key(
     if not security_manager:
          raise HTTPException(status_code=503, detail="Security manager not initialized")
 
-    # If no admin keys are set, client keys have admin access
     if not security_manager.config.admin_api_keys:
         return api_key
     
@@ -189,7 +196,8 @@ class GeminiKeyManager:
                     key_info.cooling_until = None
                     logger.info(f"Admin reset key {key[:8]}... from {old_status} to active.")
                     return {"message": f"Key starting with {key_prefix} has been reset to active."}
-            return {"error": f"No key found with prefix {key_prefix}."}
+            raise HTTPException(status_code=404, detail=f"No key found with prefix {key_prefix}.")
+
 
 class LiteLLMAdapter:
     def __init__(self, config: GeminiConfig, key_manager: GeminiKeyManager):
@@ -207,10 +215,14 @@ class LiteLLMAdapter:
     @monitor_errors
     async def chat_completion(self, request: ChatRequest) -> Union[Dict, Any]:
         last_error = None
-        for _ in range(self.config.max_retries + 1):
+        # Use a copy of keys to try to avoid issues with concurrent modifications
+        keys_to_try = list(self.key_manager.keys.keys())
+        random.shuffle(keys_to_try)
+
+        for key in keys_to_try:
             key_info = await self.key_manager.get_available_key()
             if not key_info:
-                raise HTTPException(status_code=503, detail="All API keys are currently in cooldown.")
+                continue # Skip if no key is available right now
             
             try:
                 kwargs = {
@@ -231,9 +243,8 @@ class LiteLLMAdapter:
                 last_error = str(e)
                 logger.warning(f"API call failed for key {key_info.key[:8]}... Error: {last_error}")
                 await self.key_manager.mark_key_failed(key_info.key, last_error)
-                await asyncio.sleep(1) # Wait a bit before retrying
         
-        raise HTTPException(status_code=502, detail=f"All retries failed. Last error: {last_error}")
+        raise HTTPException(status_code=502, detail=f"All available keys failed. Last error: {last_error}")
 
     async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
         gemini_request_dict = self.anthropic_to_gemini.convert_request(request)
@@ -263,7 +274,6 @@ async def lifespan(app: FastAPI):
         yield
     except Exception as e:
         logger.critical(f"Fatal error during application startup: {e}", exc_info=True)
-        # In a real-world scenario, you might want to exit or prevent the app from starting
     finally:
         logger.info("Gemini Claude Adapter shutting down.")
 
@@ -292,21 +302,20 @@ async def health_check():
     if stats["active_keys"] > 0:
         return JSONResponse(content={"status": "healthy", **stats})
     else:
-        raise HTTPException(status_code=503, detail={"status": "degraded", **stats})
+        return JSONResponse(status_code=503, content={"status": "degraded", **stats})
 
-@app.post("/v1/messages", response_model=MessagesResponse, summary="Anthropic-compatible Messages API")
+@app.post("/v1/messages")
 async def create_message(request: MessagesRequest, api_key: str = Depends(verify_api_key)):
     if not adapter:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
     response = await adapter.anthropic_messages_completion(request)
-    if isinstance(response, StreamingResponseGenerator):
+    if request.stream:
         return StreamingResponse(response, media_type="text/event-stream")
     return response
 
 @app.get("/v1/models", summary="List Models")
 async def get_models(api_key: str = Depends(verify_api_key)):
-    # This endpoint mimics the Anthropic API's model list
     return {
         "object": "list",
         "data": [
@@ -328,15 +337,16 @@ async def get_key_stats(api_key: str = Depends(verify_admin_key)):
 async def reset_failed_key(key_prefix: str, api_key: str = Depends(verify_admin_key)):
     if not key_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
-    result = await key_manager.reset_key(key_prefix)
-    if "error" in result:
-        raise HTTPException(status_code=404, detail=result["error"])
-    return result
+    return await key_manager.reset_key(key_prefix)
 
-# Global exception handler to ensure clean JSON error responses
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception for request {request.url.path}: {exc}", exc_info=True)
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"type": "api_error", "message": exc.detail}},
+        )
     return JSONResponse(
         status_code=500,
         content={"error": {"type": "internal_server_error", "message": "An unexpected error occurred."}},
