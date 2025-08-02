@@ -13,6 +13,7 @@ import httpx
 from cachetools import TTLCache
 import logging
 from contextlib import asynccontextmanager
+from collections import deque, defaultdict # Added deque
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +295,7 @@ class PerformanceMonitor:
         }
 
 class BatchProcessor:
-    """批量请求处理器"""
+    """Batch request processor"""
     def __init__(self, max_batch_size: int = 10, batch_timeout: float = 0.1):
         self.max_batch_size = max_batch_size
         self.batch_timeout = batch_timeout
@@ -303,7 +304,7 @@ class BatchProcessor:
         self.lock = asyncio.Lock()
         
     async def add_request(self, request_data: Dict[str, Any]) -> Any:
-        """添加请求到批处理队列"""
+        """Add a request to the batch processing queue"""
         future = asyncio.Future()
         
         async with self.lock:
@@ -315,10 +316,10 @@ class BatchProcessor:
         return await future
     
     async def process_batch(self):
-        """处理批量请求"""
+        """Process batch requests"""
         while True:
             try:
-                # 等待批处理条件
+                # Wait for batch processing conditions
                 await asyncio.wait_for(self.batch_event.wait(), timeout=self.batch_timeout)
                 
                 async with self.lock:
@@ -326,14 +327,14 @@ class BatchProcessor:
                         self.batch_event.clear()
                         continue
                         
-                    # 获取当前批次
+                    # Get the current batch
                     current_batch = self.pending_requests[:self.max_batch_size]
                     self.pending_requests = self.pending_requests[self.max_batch_size:]
                     
                     if not self.pending_requests:
                         self.batch_event.clear()
                 
-                # 并发处理批次中的请求
+                # Process requests in the batch concurrently
                 tasks = []
                 for request_data, future in current_batch:
                     task = asyncio.create_task(self._process_single_request(request_data, future))
@@ -342,7 +343,7 @@ class BatchProcessor:
                 await asyncio.gather(*tasks, return_exceptions=True)
                 
             except asyncio.TimeoutError:
-                # 超时也触发批处理
+                # Timeout also triggers batch processing
                 async with self.lock:
                     if self.pending_requests:
                         current_batch = self.pending_requests[:]
@@ -362,17 +363,17 @@ class BatchProcessor:
                 self.batch_event.clear()
     
     async def _process_single_request(self, request_data: Dict[str, Any], future: asyncio.Future):
-        """处理单个请求"""
+        """Process a single request"""
         try:
-            # 这里调用实际的处理逻辑
+            # Call the actual processing logic here
             result = await self._handle_request(request_data)
             future.set_result(result)
         except Exception as e:
             future.set_exception(e)
     
     async def _handle_request(self, request_data: Dict[str, Any]) -> Any:
-        """实际的请求处理逻辑"""
-        # 这里实现具体的处理逻辑
+        """Actual request processing logic"""
+        # Implement the specific processing logic here
         pass
 
 # Global instances
