@@ -32,9 +32,7 @@ class DatabaseConfig(BaseSettings):
     redis_password: Optional[SecretStr] = Field(None, description="Redis password")
     redis_db: int = Field(0, description="Redis database number")
     redis_max_connections: int = Field(10, description="Maximum Redis connections")
-    
-    class Config:
-        env_prefix = "REDIS_"
+    # 删除了这里的 class Config
 
 class SecurityConfig(BaseSettings):
     """Security configuration"""
@@ -51,7 +49,6 @@ class SecurityConfig(BaseSettings):
     def validate_adapter_keys(cls, v):
         """Validate and clean adapter API keys"""
         if isinstance(v, str):
-            # Support comma-separated string
             v = [key.strip() for key in v.split(',') if key.strip()]
         return [key.strip() for key in v if key.strip()]
     
@@ -59,12 +56,9 @@ class SecurityConfig(BaseSettings):
     def validate_admin_keys(cls, v):
         """Validate and clean admin API keys"""
         if isinstance(v, str):
-            # Support comma-separated string
             v = [key.strip() for key in v.split(',') if key.strip()]
         return [key.strip() for key in v if key.strip()]
-    
-    class Config:
-        env_prefix = "SECURITY_"
+    # 删除了这里的 class Config
 
 class GeminiConfig(BaseSettings):
     """Gemini API configuration"""
@@ -80,7 +74,6 @@ class GeminiConfig(BaseSettings):
     def validate_api_keys(cls, v):
         """Validate and clean Gemini API keys"""
         if isinstance(v, str):
-            # Support comma-separated string
             v = [key.strip() for key in v.split(',') if key.strip()]
         
         valid_keys = []
@@ -93,15 +86,12 @@ class GeminiConfig(BaseSettings):
         if not valid_keys:
             raise ValueError("No valid API keys provided")
         
-        # Warn about potentially invalid keys
         invalid_keys = [key for key in valid_keys if not key.startswith('AIza')]
         if invalid_keys:
             logger.warning(f"Potentially invalid API keys detected: {len(invalid_keys)} keys don't start with 'AIza'")
         
         return valid_keys
-    
-    class Config:
-        env_prefix = "GEMINI_"
+    # 删除了这里的 class Config
 
 class CacheConfig(BaseSettings):
     """Cache configuration"""
@@ -109,9 +99,7 @@ class CacheConfig(BaseSettings):
     max_size: int = Field(1000, description="Maximum cache size")
     ttl: int = Field(300, description="Cache TTL in seconds")
     key_prefix: str = Field("gemini_adapter", description="Cache key prefix")
-    
-    class Config:
-        env_prefix = "CACHE_"
+    # 删除了这里的 class Config
 
 class PerformanceConfig(BaseSettings):
     """Performance configuration"""
@@ -123,9 +111,7 @@ class PerformanceConfig(BaseSettings):
     write_timeout: float = Field(10.0, description="Write timeout")
     pool_timeout: float = Field(5.0, description="Pool timeout")
     http2_enabled: bool = Field(True, description="Enable HTTP/2")
-    
-    class Config:
-        env_prefix = "PERF_"
+    # 删除了这里的 class Config
 
 class ServiceConfig(BaseSettings):
     """Service configuration"""
@@ -137,9 +123,7 @@ class ServiceConfig(BaseSettings):
     enable_metrics: bool = Field(True, description="Enable metrics collection")
     enable_health_check: bool = Field(True, description="Enable health check endpoint")
     cors_origins: List[str] = Field(["*"], description="CORS allowed origins")
-    
-    class Config:
-        env_prefix = "SERVICE_"
+    # 删除了这里的 class Config
 
 class AppConfig(BaseSettings):
     """Main application configuration"""
@@ -161,7 +145,6 @@ class AppConfig(BaseSettings):
     
     def _validate_config(self):
         """Validate configuration consistency"""
-        # Check if security is properly configured
         if self.service.environment == Environment.PRODUCTION:
             if not self.security.adapter_api_keys:
                 logger.warning("Production environment without adapter API keys - service will be unsecured")
@@ -169,16 +152,15 @@ class AppConfig(BaseSettings):
             if not self.gemini.api_keys:
                 raise ValueError("Production environment requires Gemini API keys")
         
-        # Validate cache configuration
         if self.cache.enabled and self.cache.max_size <= 0:
             raise ValueError("Cache max_size must be positive when caching is enabled")
         
-        # Validate performance configuration
         if self.performance.max_connections <= 0:
             raise ValueError("Max connections must be positive")
         
         logger.info(f"Configuration validated for {self.service.environment.value} environment")
     
+    # ... (其余方法保持不变) ...
     def get_security_status(self) -> Dict[str, Any]:
         """Get security configuration status"""
         return {
@@ -224,6 +206,8 @@ class AppConfig(BaseSettings):
         logger.info(f"Caching: {'Enabled' if self.cache.enabled else 'Disabled'}")
         logger.info(f"Metrics: {'Enabled' if self.service.enable_metrics else 'Disabled'}")
         logger.info("=================================")
+
+# ... (其余函数保持不变) ...
 
 def load_configuration() -> AppConfig:
     """Load and validate configuration"""
