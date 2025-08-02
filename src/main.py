@@ -1,6 +1,8 @@
 import asyncio
 import time
 import random
+import sys # Added
+import os # Added
 from typing import List, Dict, Optional, Any, Union, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -14,31 +16,26 @@ from pydantic import BaseModel, Field, validator
 from loguru import logger
 import litellm
 from contextlib import asynccontextmanager
-import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from collections import defaultdict, deque
 
-# Import new optimization modules
-from .config import get_config, AppConfig, GeminiConfig
-from .error_handling import error_monitor, monitor_errors, ErrorClassifier
-from .performance import response_cache, http_client, performance_monitor, monitor_performance, get_performance_stats
+# Fix for relative import issue in Docker environment
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Import Anthropic API compatibility layer
-try:
-    from .anthropic_api import (
-        MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
-        AnthropicToGeminiConverter, GeminiToAnthropicConverter, 
-        StreamingResponseGenerator, ToolConverter, log_request_beautifully
-    )
-except ImportError:
-    # Fallback for different import contexts
-    from anthropic_api import (
-        MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
-        AnthropicToGeminiConverter, GeminiToAnthropicConverter, 
-        StreamingResponseGenerator, ToolConverter, log_request_beautifully
-    )
+# Import new optimization modules (changed from relative to absolute)
+from config import get_config, AppConfig, GeminiConfig
+from error_handling import error_monitor, monitor_errors, ErrorClassifier
+from performance import response_cache, http_client, performance_monitor, monitor_performance, get_performance_stats
+
+# Import Anthropic API compatibility layer (changed from relative to absolute)
+from anthropic_api import (
+    MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
+    AnthropicToGeminiConverter, GeminiToAnthropicConverter, 
+    StreamingResponseGenerator, ToolConverter, log_request_beautifully
+)
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -874,7 +871,7 @@ async def root():
         "name": "Gemini Claude Adapter",
         "version": "2.1.0",
         "status": "running",
-        "security_enabled": security_config.security_enabled,
+        "security_enabled": security_config.security_enabled if security_config else False,
         "endpoints": {
             "chat": "/v1/chat/completions",
             "messages": "/v1/messages",
@@ -885,8 +882,8 @@ async def root():
             "admin": "/admin/reset-key/{key_prefix}, /admin/recover-key/{key_prefix}"
         },
         "authentication": {
-            "required": security_config.security_enabled,
-            "methods": ["X-API-Key header", "Authorization Bearer token"] if security_config.security_enabled else []
+            "required": security_config.security_enabled if security_config else False,
+            "methods": ["X-API-Key header", "Authorization Bearer token"] if security_config and security_config.security_enabled else []
         },
         "docs": "/docs"
     }
@@ -899,15 +896,18 @@ async def health_check():
     
     try:
         stats = await key_manager.get_stats()
-        status_code = 200 if stats["active_keys"] > 0 else 503
+        is_healthy = stats["active_keys"] > 0
         
-        return {
-            "status": "healthy" if stats["active_keys"] > 0 else "degraded",
-            "timestamp": datetime.now().isoformat(),
-            "service_version": "2.1.0",
-            "security_enabled": security_config.security_enabled,
-            **stats
-        }
+        return JSONResponse(
+            status_code=200 if is_healthy else 503,
+            content={
+                "status": "healthy" if is_healthy else "degraded",
+                "timestamp": datetime.now().isoformat(),
+                "service_version": "2.1.0",
+                "security_enabled": security_config.security_enabled,
+                **stats
+            }
+        )
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=500, detail="Health check failed")
@@ -1224,7 +1224,7 @@ async def get_recent_errors(admin_key: str = Depends(verify_admin_key), limit: i
         raise HTTPException(status_code=500, detail="Recent errors retrieval failed")
 
 @app.get("/health/detailed", dependencies=[Depends(verify_api_key)])
-async def detailed_health_check(client_key: str = Depends(verify_api_key)):
+async def detailed__check(client_key: str = Depends(verify_api_key)):
     """Detailed health check with optimization metrics"""
     if not key_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -1267,6 +1267,8 @@ async def startup_event():
 @app.get("/admin/security-status", dependencies=[Depends(verify_admin_key)])
 async def get_security_status(admin_key: str = Depends(verify_admin_key)):
     """Get security configuration status - admin only"""
+    if not security_config:
+        raise HTTPException(status_code=503, detail="Security config not initialized")
     return {
         "security_enabled": security_config.security_enabled,
         "client_keys_count": len(security_config.valid_api_keys),
@@ -1278,6 +1280,5 @@ async def get_security_status(admin_key: str = Depends(verify_admin_key)):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", "8000"))
-    host = os.getenv("HOST", "0.0.0.0")
-    uvicorn.run("main:app", host=host, port=port, log_level="info")
+    # This block is for local development and won't be used by Gunicorn in Docker
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info", reload=True)
