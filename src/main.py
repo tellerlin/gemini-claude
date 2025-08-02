@@ -2,6 +2,7 @@ import asyncio
 import time
 import random
 import os
+import sys
 from typing import List, Dict, Optional, Any, Union, Set, Tuple, AsyncGenerator
 from dataclasses import dataclass
 from enum import Enum
@@ -19,7 +20,7 @@ from dotenv import load_dotenv
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from collections import defaultdict, deque
 
-# 使用相对路径导入，这是作为Python包的标准做法
+# Use relative imports, which is the standard for Python packages
 from .config import get_config, AppConfig, GeminiConfig
 from .error_handling import error_monitor, monitor_errors
 from .performance import response_cache, http_client, performance_monitor, monitor_performance, get_performance_stats
@@ -29,10 +30,8 @@ from .anthropic_api import (
     StreamingResponseGenerator,
 )
 
-# 加载 .env 文件中的环境变量
+# Load environment variables from .env file
 load_dotenv()
-
-# --- 注意：日志初始化代码已从这里移除 ---
 
 class KeyStatus(Enum):
     ACTIVE = "active"
@@ -206,14 +205,11 @@ class LiteLLMAdapter:
     @monitor_errors
     async def chat_completion(self, request: ChatRequest) -> Union[Dict, Any]:
         last_error = None
-        # Use a copy of keys to try to avoid issues with concurrent modifications
-        keys_to_try = list(self.key_manager.keys.keys())
-        random.shuffle(keys_to_try)
-
         for _ in range(self.config.max_retries + 1):
             key_info = await self.key_manager.get_available_key()
             if not key_info:
-                 continue # No key available right now, retry might get one later
+                await asyncio.sleep(1) # Wait if no keys are available, maybe one will cool down
+                continue
             
             try:
                 kwargs = {
@@ -235,7 +231,7 @@ class LiteLLMAdapter:
                 logger.warning(f"API call failed for key {key_info.key[:8]}... Error: {last_error}")
                 await self.key_manager.mark_key_failed(key_info.key, last_error)
         
-        raise HTTPException(status_code=502, detail=f"All available keys failed. Last error: {last_error}")
+        raise HTTPException(status_code=502, detail=f"All retries failed. Last error: {last_error}")
 
     async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
         gemini_request_dict = self.anthropic_to_gemini.convert_request(request)
@@ -257,7 +253,7 @@ adapter: Optional[LiteLLMAdapter] = None
 async def lifespan(app: FastAPI):
     global key_manager, adapter, security_manager
     
-    # --- 新增：在这里初始化日志 ---
+    # Move Loguru file initialization here to make it Gunicorn-friendly
     os.makedirs("logs", exist_ok=True)
     logger.add(
         "logs/gemini_adapter_{time}.log",
@@ -265,7 +261,7 @@ async def lifespan(app: FastAPI):
         retention="7 days",
         level="INFO",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}",
-        enqueue=True, # Important for multiprocessing
+        enqueue=True, # Important for multiprocessing safety
         catch=True
     )
     
