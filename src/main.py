@@ -548,6 +548,7 @@ class LiteLLMAdapter:
         attempted_keys = set()
         
         # Check cache
+        cache_key = None
         if not request.stream:
             cache_key = {
                 "model": request.model,
@@ -621,7 +622,7 @@ class LiteLLMAdapter:
                 try:
                     result = await task
                     if result:
-                        if not request.stream:
+                        if not request.stream and cache_key:
                             await response_cache.set(cache_key, result)
                         return result
                 except Exception as e:
@@ -661,13 +662,61 @@ class LiteLLMAdapter:
             gemini_response = await self.chat_completion(chat_request)
             return self.gemini_to_anthropic.convert_response(gemini_response, request)
 
-# CORRECTED: Added missing health check task function
+# Global state
+key_manager: Optional[GeminiKeyManager] = None
+adapter: Optional[LiteLLMAdapter] = None
+
+# Add request rate limiting middleware
+class RateLimiter:
+    def __init__(self, max_requests: int = 100, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = defaultdict(deque)
+        self.lock = asyncio.Lock()  # Add a lock to support concurrency
+        
+    async def is_allowed(self, client_id: str) -> bool:
+        async with self.lock:
+            now = time.time()
+            client_requests = self.requests[client_id]
+            
+            # Clean up expired requests (batch processing)
+            cutoff_time = now - self.window_seconds
+            while client_requests and client_requests[0] < cutoff_time:
+                client_requests.popleft()
+            
+            # Check the limit
+            if len(client_requests) >= self.max_requests:
+                return False
+            
+            # Record the new request
+            client_requests.append(now)
+            return True
+    
+    def get_remaining_requests(self, client_id: str) -> int:
+        """Get the number of remaining requests"""
+        client_requests = self.requests[client_id]
+        return max(0, self.max_requests - len(client_requests))
+
+# Create a global rate limiter instance
+rate_limiter = RateLimiter(max_requests=100, window_seconds=60)
+
+# Add a dependency to check the rate limit on the endpoint
+async def check_rate_limit(client_key: str = Depends(verify_api_key)):
+    if not await rate_limiter.is_allowed(client_key):
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded. Please try again later.",
+            headers={"Retry-After": "60"}
+        )
+    return client_key
+
+# CORRECTED: Added missing health check task function from `main.py`
 async def optimized_health_check_task():
     """Optimized health check task that runs periodically"""
     while True:
         try:
             # Check and recover keys
-            if 'key_manager' in globals() and key_manager is not None:
+            if key_manager is not None:
                 recovered_count = await key_manager._check_and_recover_keys()
                 if recovered_count > 0:
                     logger.info(f"Health check recovered {recovered_count} keys")
@@ -699,6 +748,7 @@ async def lifespan(app: FastAPI):
     )
 
     try:
+        app.state.start_time = time.time() # For uptime metric
         app_config = get_config()
         
         security_config = SecurityConfig(app_config)
@@ -744,4 +794,439 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# ... (all endpoints remain the same) ...
+async def stream_generator(response_stream):
+    """Generate streaming response chunks"""
+    try:
+        async for chunk in response_stream:
+            try:
+                # Handle different chunk formats
+                if hasattr(chunk, 'dict'):
+                    chunk_data = chunk.dict()
+                elif hasattr(chunk, 'model_dump'):
+                    chunk_data = chunk.model_dump()
+                else:
+                    chunk_data = chunk
+                
+                yield f"data: {json.dumps(chunk_data)}\n\n"
+            except Exception as e:
+                logger.error(f"Error serializing chunk: {e}")
+                continue
+                
+        yield "data: [DONE]\n\n"
+    except Exception as e:
+        logger.error(f"Error during streaming: {e}")
+        error_payload = {"error": {"message": str(e), "type": "stream_error"}}
+        yield f"data: {json.dumps(error_payload)}\n\n"
+
+# Public endpoints (no authentication required)
+@app.get("/", include_in_schema=False)
+async def root():
+    """Root endpoint with basic info - no authentication required"""
+    return {
+        "name": "Gemini Claude Adapter",
+        "version": "2.1.0",
+        "status": "running",
+        "security_enabled": security_config.security_enabled if security_config else False,
+        "endpoints": {
+            "chat": "/v1/chat/completions",
+            "messages": "/v1/messages",
+            "messages_tokens": "/v1/messages/count_tokens",
+            "models": "/v1/models",
+            "health": "/health",
+            "stats": "/stats",
+            "admin": "/admin/reset-key/{key_prefix}, /admin/recover-key/{key_prefix}"
+        },
+        "authentication": {
+            "required": security_config.security_enabled if security_config else False,
+            "methods": ["X-API-Key header", "Authorization Bearer token"] if security_config and security_config.security_enabled else []
+        },
+        "docs": "/docs"
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint - no authentication required for monitoring"""
+    if not key_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        stats = await key_manager.get_stats()
+        is_healthy = stats["active_keys"] > 0
+        
+        return JSONResponse(
+            status_code=200 if is_healthy else 503,
+            content={
+                "status": "healthy" if is_healthy else "degraded",
+                "timestamp": datetime.now().isoformat(),
+                "service_version": "2.1.0",
+                "security_enabled": security_config.security_enabled,
+                **stats
+            }
+        )
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        raise HTTPException(status_code=500, detail="Health check failed")
+
+# Modify main endpoint to include rate limiting
+@app.post("/v1/messages")
+async def create_message(
+    request: MessagesRequest,
+    raw_request: Request,
+    api_key: str = Depends(check_rate_limit) # Using rate limit dependency
+):
+    """Create a message - Anthropic Messages API"""
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        # Get request details for logging
+        anthropic_model = request.model
+        gemini_model = adapter.anthropic_to_gemini.convert_model(anthropic_model)
+        num_messages = len(request.messages)
+        num_tools = len(request.tools) if request.tools else 0
+        
+        logger.info(f"Anthropic Messages API request from client: {api_key[:8] if api_key != 'insecure_mode' else 'insecure_mode'}...")
+        logger.info(f"Request model: {anthropic_model}, stream: {request.stream}")
+        
+        # Log the request beautifully
+        log_request_beautifully(
+            method="POST",
+            path=str(raw_request.url.path),
+            anthropic_model=anthropic_model,
+            gemini_model=gemini_model,
+            num_messages=num_messages,
+            num_tools=num_tools
+        )
+        
+        response = await adapter.anthropic_messages_completion(request)
+        
+        if request.stream:
+            return StreamingResponse(
+                response,
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, Anthropic-Version",
+                    "Anthropic-Version": "2023-06-01"
+                }
+            )
+        else:
+            return response
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in Anthropic Messages API: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.options("/v1/messages")
+async def options_messages():
+    """Handle OPTIONS requests for CORS preflight"""
+    return {"status": "ok"}
+
+@app.post("/v1/messages/count_tokens")
+async def count_tokens(
+    request: TokenCountRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """Count tokens for a message"""
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        logger.info(f"Token count request from client: {api_key[:8] if api_key != 'insecure_mode' else 'insecure_mode'}...")
+        
+        # Convert request for token counting
+        gemini_request_dict = adapter.anthropic_to_gemini.convert_request(
+            MessagesRequest(
+                model=request.model,
+                max_tokens=100,  # Arbitrary value for token counting
+                messages=request.messages,
+                system=request.system,
+                tools=request.tools,
+                tool_choice=request.tool_choice
+            )
+        )
+        
+        # Use LiteLLM's token counter
+        try:
+            from litellm import token_counter
+            token_count = token_counter(
+                model=gemini_request_dict["model"],
+                messages=gemini_request_dict["messages"]
+            )
+            return TokenCountResponse(input_tokens=token_count)
+        except ImportError:
+            logger.error("Could not import token_counter from litellm")
+            # Fallback estimation
+            text_content = ""
+            for msg in gemini_request_dict["messages"]:
+                if isinstance(msg.get("content"), str):
+                    text_content += msg["content"] + " "
+            estimated_tokens = len(text_content.split()) * 1.3  # Rough estimate
+            return TokenCountResponse(input_tokens=int(estimated_tokens))
+            
+    except Exception as e:
+        logger.error(f"Error counting tokens: {e}")
+        raise HTTPException(status_code=500, detail="Token counting failed")
+
+# Legacy OpenAI-compatible endpoint (maintained for backward compatibility)
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatRequest, api_key: str = Depends(verify_api_key)):
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        logger.info(f"Legacy chat completion request from client: {api_key[:8] if api_key != 'insecure_mode' else 'insecure_mode'}...")
+        response = await adapter.chat_completion(request)
+        if request.stream:
+            return StreamingResponse(
+                stream_generator(response), 
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
+                }
+            )
+        else:
+            return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in chat completion: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.options("/v1/chat/completions")
+async def options_chat_completions():
+    """Handle OPTIONS requests for CORS preflight - no authentication required"""
+    return {
+        "status": "ok"
+    }
+
+@app.get("/stats")
+async def get_stats_endpoint(api_key: str = Depends(verify_api_key)):
+    if not key_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        return await key_manager.get_stats()
+    except Exception as e:
+        logger.error(f"Stats retrieval failed: {e}")
+        raise HTTPException(status_code=500, detail="Stats retrieval failed")
+
+@app.get("/v1/models")
+async def get_models(api_key: str = Depends(verify_api_key)):
+    """Get available models"""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "claude-3-5-sonnet",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "anthropic"
+            },
+            {
+                "id": "claude-3-5-haiku",
+                "object": "model", 
+                "created": int(time.time()),
+                "owned_by": "anthropic"
+            },
+            {
+                "id": "claude-3-opus",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "anthropic"
+            },
+            {
+                "id": "claude-3-sonnet",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "anthropic"
+            },
+            {
+                "id": "claude-3-haiku",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "anthropic"
+            }
+        ]
+    }
+
+# Admin endpoints (require admin authentication)
+@app.post("/admin/reset-key/{key_prefix}")
+async def reset_key(key_prefix: str, api_key: str = Depends(verify_admin_key)):
+    """Reset a key's status by prefix - requires admin authentication"""
+    if not key_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        result = await key_manager.reset_key(key_prefix)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Key reset failed: {e}")
+        raise HTTPException(status_code=500, detail="Key reset failed")
+
+@app.post("/admin/recover-key/{key_prefix}")
+async def recover_key(key_prefix: str, api_key: str = Depends(verify_admin_key)):
+    """Attempt to recover a permanently failed key - requires admin authentication"""
+    if not key_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        result = await key_manager.attempt_key_recovery(key_prefix)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Key recovery failed: {e}")
+        raise HTTPException(status_code=500, detail="Key recovery failed")
+
+# Add more detailed error handling and logging
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler"""
+    logger.error(f"Unhandled exception: {type(exc).__name__}: {str(exc)}")
+    logger.error(f"Request: {request.method} {request.url}")
+    
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"message": exc.detail, "type": "http_exception"}}
+        )
+    
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"message": "Internal server error", "type": "internal_error"}}
+    )
+
+# Enhanced monitoring endpoint with new optimization metrics
+@app.get("/metrics")
+async def get_metrics(api_key: str = Depends(verify_api_key)):
+    """Get detailed service monitoring metrics"""
+    if not key_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        # Get key manager stats
+        stats = await key_manager.get_stats()
+        
+        # Calculate additional metrics
+        total_requests = sum(k['total_requests'] for k in stats['keys_detail'])
+        total_successes = sum(k['successful_requests'] for k in stats['keys_detail'])
+        overall_success_rate = (total_successes / total_requests * 100) if total_requests > 0 else 0
+        
+        # Get performance metrics
+        perf_stats = get_performance_stats()
+        
+        # Get error monitoring stats
+        error_stats = await error_monitor.get_error_stats()
+        
+        return {
+            "key_manager_stats": stats,
+            "overall_success_rate": round(overall_success_rate, 2),
+            "total_requests": total_requests,
+            "total_successes": total_successes,
+            "service_uptime": time.time() - app.state.start_time if hasattr(app.state, 'start_time') else 0,
+            "timestamp": datetime.now().isoformat(),
+            "performance_metrics": perf_stats,
+            "error_metrics": error_stats
+        }
+    except Exception as e:
+        logger.error(f"Metrics retrieval failed: {e}")
+        raise HTTPException(status_code=500, detail="Metrics retrieval failed")
+
+@app.get("/cache/stats")
+async def get_cache_stats(api_key: str = Depends(verify_api_key)):
+    """Get cache statistics"""
+    try:
+        return response_cache.get_stats()
+    except Exception as e:
+        logger.error(f"Cache stats retrieval failed: {e}")
+        raise HTTPException(status_code=500, detail="Cache stats retrieval failed")
+
+@app.post("/cache/clear")
+async def clear_cache(api_key: str = Depends(verify_admin_key)):
+    """Clear cache"""
+    try:
+        await response_cache.clear()
+        return {"message": "Cache cleared successfully"}
+    except Exception as e:
+        logger.error(f"Cache clear failed: {e}")
+        raise HTTPException(status_code=500, detail="Cache clear failed")
+
+@app.get("/errors/recent")
+async def get_recent_errors(api_key: str = Depends(verify_admin_key), limit: int = 50):
+    """Get recent errors for admin monitoring"""
+    try:
+        return await error_monitor.get_recent_errors(limit)
+    except Exception as e:
+        logger.error(f"Recent errors retrieval failed: {e}")
+        raise HTTPException(status_code=500, detail="Recent errors retrieval failed")
+
+@app.get("/health/detailed")
+async def detailed_health_check(api_key: str = Depends(verify_api_key)):
+    """Detailed health check with optimization metrics"""
+    if not key_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        # Basic health check
+        stats = await key_manager.get_stats()
+        basic_healthy = stats["active_keys"] > 0
+        
+        # Check cache health
+        cache_stats = response_cache.get_stats()
+        cache_healthy = cache_stats["hit_rate"] is not None
+        
+        # Check HTTP client health
+        http_stats = http_client.get_stats()
+        http_healthy = http_stats["error_rate"] < 5  # Less than 5% error rate
+        
+        # Overall health status
+        overall_healthy = basic_healthy and cache_healthy and http_healthy
+        
+        return {
+            "status": "healthy" if overall_healthy else "degraded",
+            "components": {
+                "key_manager": {"healthy": basic_healthy, "active_keys": stats["active_keys"]},
+                "cache": {"healthy": cache_healthy, "stats": cache_stats},
+                "http_client": {"healthy": http_healthy, "stats": http_stats}
+            },
+            "timestamp": datetime.now().isoformat(),
+            "version": "2.1.0"
+        }
+    except Exception as e:
+        logger.error(f"Detailed health check failed: {e}")
+        raise HTTPException(status_code=500, detail="Health check failed")
+
+@app.get("/admin/security-status")
+async def get_security_status(api_key: str = Depends(verify_admin_key)):
+    """Get security configuration status - admin only"""
+    if not security_config:
+        raise HTTPException(status_code=503, detail="Security config not initialized")
+    return {
+        "security_enabled": security_config.security_enabled,
+        "client_keys_count": len(security_config.valid_api_keys),
+        "admin_keys_count": len(security_config.admin_keys),
+        "has_admin_keys": bool(security_config.admin_keys),
+        "authentication_methods": ["X-API-Key header", "Authorization Bearer token"],
+        "admin_endpoints": ["/admin/reset-key/{key_prefix}", "/admin/recover-key/{key_prefix}", "/admin/security-status"]
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    # This block is for local development and won't be used by Gunicorn in Docker
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", reload=True)
