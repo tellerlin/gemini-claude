@@ -4,7 +4,7 @@ Enhanced configuration management for Gemini Claude Adapter
 
 import os
 from typing import List, Optional, Dict, Any, Union
-from pydantic import Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 from enum import Enum
 import json
@@ -26,14 +26,14 @@ class LogLevel(str, Enum):
     ERROR = "ERROR"
     CRITICAL = "CRITICAL"
 
-class DatabaseConfig(BaseSettings):
+class DatabaseConfig(BaseModel):
     """Database configuration"""
     redis_url: Optional[str] = Field(None, description="Redis URL for caching")
     redis_password: Optional[SecretStr] = Field(None, description="Redis password")
     redis_db: int = Field(0, description="Redis database number")
     redis_max_connections: int = Field(10, description="Maximum Redis connections")
 
-class SecurityConfig(BaseSettings):
+class SecurityConfig(BaseModel):
     """Security configuration"""
     adapter_api_keys: List[str] = Field([], description="Client API keys")
     admin_api_keys: List[str] = Field([], description="Admin API keys")
@@ -66,7 +66,7 @@ class SecurityConfig(BaseSettings):
             v = [key.strip() for key in v if key.strip()]
         return [key.strip() for key in v if key.strip()]
 
-class GeminiConfig(BaseSettings):
+class GeminiConfig(BaseModel):
     """Gemini API configuration"""
     api_keys: List[str] = Field(..., description="Gemini API keys")
     proxy_url: Optional[str] = Field(None, description="Proxy URL for API calls")
@@ -102,14 +102,14 @@ class GeminiConfig(BaseSettings):
         
         return valid_keys
 
-class CacheConfig(BaseSettings):
+class CacheConfig(BaseModel):
     """Cache configuration"""
     enabled: bool = Field(True, description="Enable response caching")
     max_size: int = Field(1000, description="Maximum cache size")
     ttl: int = Field(300, description="Cache TTL in seconds")
     key_prefix: str = Field("gemini_adapter", description="Cache key prefix")
 
-class PerformanceConfig(BaseSettings):
+class PerformanceConfig(BaseModel):
     """Performance configuration"""
     max_keepalive_connections: int = Field(20, description="Max keepalive connections")
     max_connections: int = Field(100, description="Max total connections")
@@ -119,11 +119,10 @@ class PerformanceConfig(BaseSettings):
     write_timeout: float = Field(10.0, description="Write timeout")
     pool_timeout: float = Field(5.0, description="Pool timeout")
     http2_enabled: bool = Field(True, description="Enable HTTP/2")
-    # +++ Add missing fields to match OptimizedHTTPClient +++
     trust_env: bool = Field(True, description="Trust environment for proxy support")
     verify_ssl: bool = Field(True, description="Verify SSL certificates")
 
-class ServiceConfig(BaseSettings):
+class ServiceConfig(BaseModel):
     """Service configuration"""
     environment: Environment = Field(Environment.DEVELOPMENT, description="Runtime environment")
     host: str = Field("0.0.0.0", description="Service host")
@@ -141,11 +140,11 @@ class AppConfig(BaseSettings):
     cache: CacheConfig
     performance: PerformanceConfig
     service: ServiceConfig
-    database: DatabaseConfig = DatabaseConfig()
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     
     class Config:
         env_file = ".env"
-        # +++ This is the crucial fix for loading nested configs like PERFORMANCE__* +++
+        # This is the crucial fix for loading nested configs like PERFORMANCE__*
         env_nested_delimiter = "__"
         case_sensitive = False
     
@@ -170,7 +169,6 @@ class AppConfig(BaseSettings):
         
         logger.info(f"Configuration validated for {self.service.environment.value} environment")
     
-    # ... (remaining methods are unchanged) ...
     def get_security_status(self) -> Dict[str, Any]:
         """Get security configuration status"""
         return {
@@ -217,52 +215,29 @@ class AppConfig(BaseSettings):
         logger.info(f"Metrics: {'Enabled' if self.service.enable_metrics else 'Disabled'}")
         logger.info("=================================")
 
-# ... (remaining functions are unchanged) ...
+# Global configuration instance
+_config: Optional[AppConfig] = None
 
 def load_configuration() -> AppConfig:
     """Load and validate configuration"""
+    global _config
     try:
-        config = AppConfig()
-        config.log_configuration()
-        return config
+        _config = AppConfig()
+        _config.log_configuration()
+        return _config
     except Exception as e:
         logger.error(f"Failed to load configuration: {e}")
         raise
 
-def get_environment_config() -> Dict[str, Any]:
-    """Get environment-specific configuration"""
-    env = os.getenv("SERVICE_ENVIRONMENT", "development").lower()
-    
-    base_config = {
-        "service": {
-            "environment": env,
-            "log_level": "DEBUG" if env == "development" else "INFO",
-            "enable_metrics": env != "development"
-        },
-        "cache": {
-            "enabled": env != "development",
-            "ttl": 60 if env == "development" else 300
-        },
-        "performance": {
-            "max_connections": 50 if env == "development" else 100,
-            "http2_enabled": env != "development"
-        }
-    }
-    
-    return base_config
-
-# Global configuration instance
-config: Optional[AppConfig] = None
-
 def get_config() -> AppConfig:
-    """Get the global configuration instance"""
-    global config
-    if config is None:
-        config = load_configuration()
-    return config
+    """Get the global configuration instance, loading it if it doesn't exist."""
+    global _config
+    if _config is None:
+        _config = load_configuration()
+    return _config
 
 def reload_configuration():
     """Reload configuration (useful for runtime updates)"""
-    global config
-    config = load_configuration()
+    global _config
+    _config = load_configuration()
     logger.info("Configuration reloaded")
