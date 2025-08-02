@@ -22,3 +22,8 @@ services:
     # This ensures logs are not lost when the container is recreated.
     volumes:
       - ./logs:/app/logs
+
+    # --- DIAGNOSTIC COMMAND ADDED ---
+    # This command overrides the default startup.
+    # It will print all environment variables inside the container and then wait.
+    command: sh -c 'echo "--- Container Environment ---" && printenv | sort && echo "--- End Environment ---" && sleep 3600'
