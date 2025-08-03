@@ -24,10 +24,9 @@ import hashlib
 try:
     from .config import get_config, AppConfig
     from .error_handling import error_monitor, monitor_errors, ErrorClassifier
-    from .performance import (
-        response_cache, http_client, performance_monitor, 
-        monitor_performance, get_performance_stats, initialize_performance_modules
-    )
+    # Corrected import: Import the performance module
+    from . import performance
+    from .performance import get_performance_stats, initialize_performance_modules, monitor_performance
     from .anthropic_api import (
         MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
         AnthropicToGeminiConverter, GeminiToAnthropicConverter,
@@ -36,10 +35,9 @@ try:
 except ImportError:
     from config import get_config, AppConfig
     from error_handling import error_monitor, monitor_errors, ErrorClassifier
-    from performance import (
-        response_cache, http_client, performance_monitor, 
-        monitor_performance, get_performance_stats, initialize_performance_modules
-    )
+    # Corrected import: Import the performance module
+    import performance
+    from performance import get_performance_stats, initialize_performance_modules, monitor_performance
     from anthropic_api import (
         MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
         AnthropicToGeminiConverter, GeminiToAnthropicConverter,
@@ -235,17 +233,17 @@ class GeminiKeyManager:
                 status_code = int(match.group(1))
                 break
         permanent_patterns = [
-            'invalid api key', 'api key not found', 'api key disabled', 'account disabled', 
-            'account suspended', 'account terminated', 'unauthorized', 'authentication failed', 
+            'invalid api key', 'api key not found', 'api key disabled', 'account disabled',
+            'account suspended', 'account terminated', 'unauthorized', 'authentication failed',
             'access denied', 'billing disabled', 'payment required', 'payment failed',
-            'quota exceeded permanently', 'api key revoked', 'project not found', 
+            'quota exceeded permanently', 'api key revoked', 'project not found',
             'project deleted', 'service disabled', 'forbidden', 'permission denied'
         ]
         permanent_status_codes = [401, 402, 403, 404]
         if any(pattern in error_lower for pattern in permanent_patterns) or status_code in permanent_status_codes:
             return 'PERMANENT', -1
         extended_patterns = [
-            'quota', 'rate limit', 'rate_limit', 'too many requests', 'resource exhausted', 
+            'quota', 'rate limit', 'rate_limit', 'too many requests', 'resource exhausted',
             'limit exceeded', 'usage limit', 'billing quota', 'daily limit', 'monthly limit'
         ]
         if any(pattern in error_lower for pattern in extended_patterns) or status_code == 429:
@@ -253,7 +251,7 @@ class GeminiKeyManager:
         if status_code >= 500:
             return 'SERVER_ERROR', 300
         timeout_patterns = [
-            'timeout', 'connection', 'network', 'dns', 'unreachable', 'read timeout', 
+            'timeout', 'connection', 'network', 'dns', 'unreachable', 'read timeout',
             'connect timeout', 'request timeout', 'connection reset', 'connection refused'
         ]
         if any(pattern in error_lower for pattern in timeout_patterns):
@@ -410,7 +408,8 @@ class LiteLLMAdapter:
                 "model": request.model, "messages": request.messages,
                 "temperature": request.temperature, "max_tokens": request.max_tokens
             }
-            cached_response = await response_cache.get(cache_key)
+            # Corrected: Access response_cache via the performance module
+            cached_response = await performance.response_cache.get(cache_key)
             if cached_response:
                 return cached_response
         max_concurrent = min(3, len(self.key_manager.keys))
@@ -427,7 +426,9 @@ class LiteLLMAdapter:
                     kwargs = {
                         "model": f"gemini/{request.model}", "messages": request.messages,
                         "api_key": key_info.key, "temperature": request.temperature,
-                        "stream": request.stream, "client": http_client.client,
+                        "stream": request.stream, 
+                        # Corrected: Access http_client via the performance module
+                        "client": performance.http_client.client,
                     }
                     if request.max_tokens:
                         kwargs["max_tokens"] = request.max_tokens
@@ -457,7 +458,8 @@ class LiteLLMAdapter:
                     result = await task
                     if result:
                         if not request.stream and cache_key:
-                            await response_cache.set(cache_key, result)
+                            # Corrected: Access response_cache via the performance module
+                            await performance.response_cache.set(cache_key, result)
                         return result
                 except Exception as e:
                     last_error = str(e)
@@ -550,7 +552,8 @@ async def lifespan(app: FastAPI):
         security_config = SecurityConfig(app_config)
         key_manager = GeminiKeyManager(app_config)
         adapter = LiteLLMAdapter(app_config, key_manager)
-        await http_client.initialize()
+        # Corrected: Access http_client via the performance module
+        await performance.http_client.initialize()
         health_task = asyncio.create_task(optimized_health_check_task())
         logger.info("Gemini Claude Adapter v2.1.0 started successfully with optimizations.")
         logger.info(f"Environment: {app_config.SERVICE_ENVIRONMENT.value}")
@@ -572,8 +575,9 @@ async def lifespan(app: FastAPI):
                 await health_task
             except asyncio.CancelledError:
                 pass
-        if http_client:
-            await http_client.close()
+        # Corrected: Access http_client via the performance module
+        if performance.http_client:
+            await performance.http_client.close()
         logger.info("Gemini Claude Adapter shutting down.")
 
 app = FastAPI(
@@ -823,7 +827,8 @@ async def get_metrics(api_key: str = Depends(verify_api_key)):
 @app.get("/cache/stats")
 async def get_cache_stats(api_key: str = Depends(verify_api_key)):
     try:
-        return response_cache.get_stats()
+        # Corrected: Access response_cache via the performance module
+        return performance.response_cache.get_stats()
     except Exception as e:
         logger.error(f"Cache stats retrieval failed: {e}")
         raise HTTPException(status_code=500, detail="Cache stats retrieval failed")
@@ -831,7 +836,8 @@ async def get_cache_stats(api_key: str = Depends(verify_api_key)):
 @app.post("/cache/clear")
 async def clear_cache(api_key: str = Depends(verify_admin_key)):
     try:
-        response_cache.clear()
+        # Corrected: Access response_cache via the performance module
+        performance.response_cache.clear()
         return {"message": "Cache cleared successfully"}
     except Exception as e:
         logger.error(f"Cache clear failed: {e}")
@@ -852,9 +858,10 @@ async def detailed_health_check(api_key: str = Depends(verify_api_key)):
     try:
         stats = await key_manager.get_stats()
         basic_healthy = stats["active_keys"] > 0
-        cache_stats = response_cache.get_stats()
+        # Corrected: Access modules via the performance module
+        cache_stats = performance.response_cache.get_stats()
         cache_healthy = cache_stats["hit_rate"] is not None
-        http_stats = http_client.get_stats()
+        http_stats = performance.http_client.get_stats()
         http_healthy = http_stats["error_rate"] < 5
         overall_healthy = basic_healthy and cache_healthy and http_healthy
         return {
