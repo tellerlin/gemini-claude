@@ -15,30 +15,25 @@ import logging
 from contextlib import asynccontextmanager
 from collections import deque, defaultdict
 
-# [MODIFIED] Import only the required classes from the updated config module.
-# CacheConfig and PerformanceConfig are removed as they no longer exist.
 from .config import get_config, AppConfig
 
 logger = logging.getLogger(__name__)
 
 class ResponseCache:
     """Intelligent response caching system with two-tier strategy"""
-    
-    # [MODIFIED] The __init__ method now accepts the main AppConfig object
-    # and reads flat cache-related variables directly from it.
+
     def __init__(self, config: AppConfig):
         self.enabled = config.CACHE_ENABLED
         self.max_size = config.CACHE_MAX_SIZE
         self.ttl = config.CACHE_TTL
         self.key_prefix = config.CACHE_KEY_PREFIX
         
-        # Two-tier caching strategy
         self.cache = TTLCache(maxsize=self.max_size, ttl=self.ttl)
-        self.frequent_cache = TTLCache(maxsize=self.max_size // 4, ttl=self.ttl * 2)  # High-frequency cache
+        self.frequent_cache = TTLCache(maxsize=self.max_size // 4, ttl=self.ttl * 2)
         self.hit_count = 0
         self.miss_count = 0
         self.lock = asyncio.Lock()
-        self._bloom_filter = set()  # Simple bloom filter for cache avoidance
+        self._bloom_filter = set()
     
     def _generate_cache_key(self, request_dict: Dict[str, Any]) -> str:
         """Generate a consistent cache key from request data"""
@@ -67,7 +62,6 @@ class ResponseCache:
     
     async def get(self, request_dict: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Get cached response for request with two-tier strategy"""
-        # [MODIFIED] Use the 'enabled' attribute set in __init__
         if not self.enabled or not self._should_cache(request_dict):
             return None
             
@@ -93,7 +87,6 @@ class ResponseCache:
     
     async def set(self, request_dict: Dict[str, Any], response_data: Dict[str, Any]) -> None:
         """Cache response for request with intelligent strategy"""
-        # [MODIFIED] Use the 'enabled' attribute set in __init__
         if not self.enabled or not self._should_cache(request_dict):
             return
         
@@ -132,8 +125,6 @@ class ResponseCache:
 class OptimizedHTTPClient:
     """Optimized HTTP client with enhanced connection pooling and performance monitoring"""
     
-    # [MODIFIED] The __init__ method now accepts the main AppConfig object
-    # and reads flat performance-related variables directly from it.
     def __init__(self, config: AppConfig):
         self.config = config
         self.client: Optional[httpx.AsyncClient] = None
@@ -218,7 +209,6 @@ class OptimizedHTTPClient:
             }
         }
 
-# ... (The rest of the file does not need changes)
 class PerformanceMonitor:
     """Performance monitoring for the adapter"""
     
@@ -349,13 +339,21 @@ class BatchProcessor:
         """Actual request processing logic"""
         pass
 
-# [MODIFIED] Global instances are now initialized with the main AppConfig object,
-# which is compatible with their updated __init__ methods.
-app_config = get_config()
-response_cache = ResponseCache(app_config)
-http_client = OptimizedHTTPClient(app_config)
-performance_monitor = PerformanceMonitor()
-batch_processor = BatchProcessor()
+# Initialize these variables as None at the module level.
+# They will be properly initialized inside the application's lifespan.
+response_cache: Optional[ResponseCache] = None
+http_client: Optional[OptimizedHTTPClient] = None
+performance_monitor: PerformanceMonitor = PerformanceMonitor()
+batch_processor: BatchProcessor = BatchProcessor()
+
+def initialize_performance_modules(config: AppConfig):
+    """
+    Initializes performance-related modules after config is loaded.
+    """
+    global response_cache, http_client
+    response_cache = ResponseCache(config)
+    http_client = OptimizedHTTPClient(config)
+    logger.info("Performance modules initialized.")
 
 
 @asynccontextmanager
