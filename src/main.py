@@ -24,7 +24,6 @@ import hashlib
 try:
     from .config import get_config, AppConfig
     from .error_handling import error_monitor, monitor_errors, ErrorClassifier
-    # Corrected import: Import the performance module
     from . import performance
     from .performance import get_performance_stats, initialize_performance_modules, monitor_performance
     from .anthropic_api import (
@@ -35,7 +34,6 @@ try:
 except ImportError:
     from config import get_config, AppConfig
     from error_handling import error_monitor, monitor_errors, ErrorClassifier
-    # Corrected import: Import the performance module
     import performance
     from performance import get_performance_stats, initialize_performance_modules, monitor_performance
     from anthropic_api import (
@@ -408,7 +406,6 @@ class LiteLLMAdapter:
                 "model": request.model, "messages": request.messages,
                 "temperature": request.temperature, "max_tokens": request.max_tokens
             }
-            # Corrected: Access response_cache via the performance module
             cached_response = await performance.response_cache.get(cache_key)
             if cached_response:
                 return cached_response
@@ -426,9 +423,7 @@ class LiteLLMAdapter:
                     kwargs = {
                         "model": f"gemini/{request.model}", "messages": request.messages,
                         "api_key": key_info.key, "temperature": request.temperature,
-                        "stream": request.stream, 
-                        # Corrected: Access http_client via the performance module
-                        "client": performance.http_client.client,
+                        "stream": request.stream,
                     }
                     if request.max_tokens:
                         kwargs["max_tokens"] = request.max_tokens
@@ -458,7 +453,6 @@ class LiteLLMAdapter:
                     result = await task
                     if result:
                         if not request.stream and cache_key:
-                            # Corrected: Access response_cache via the performance module
                             await performance.response_cache.set(cache_key, result)
                         return result
                 except Exception as e:
@@ -552,7 +546,6 @@ async def lifespan(app: FastAPI):
         security_config = SecurityConfig(app_config)
         key_manager = GeminiKeyManager(app_config)
         adapter = LiteLLMAdapter(app_config, key_manager)
-        # Corrected: Access http_client via the performance module
         await performance.http_client.initialize()
         health_task = asyncio.create_task(optimized_health_check_task())
         logger.info("Gemini Claude Adapter v2.1.0 started successfully with optimizations.")
@@ -575,7 +568,6 @@ async def lifespan(app: FastAPI):
                 await health_task
             except asyncio.CancelledError:
                 pass
-        # Corrected: Access http_client via the performance module
         if performance.http_client:
             await performance.http_client.close()
         logger.info("Gemini Claude Adapter shutting down.")
@@ -827,7 +819,6 @@ async def get_metrics(api_key: str = Depends(verify_api_key)):
 @app.get("/cache/stats")
 async def get_cache_stats(api_key: str = Depends(verify_api_key)):
     try:
-        # Corrected: Access response_cache via the performance module
         return performance.response_cache.get_stats()
     except Exception as e:
         logger.error(f"Cache stats retrieval failed: {e}")
@@ -836,7 +827,6 @@ async def get_cache_stats(api_key: str = Depends(verify_api_key)):
 @app.post("/cache/clear")
 async def clear_cache(api_key: str = Depends(verify_admin_key)):
     try:
-        # Corrected: Access response_cache via the performance module
         performance.response_cache.clear()
         return {"message": "Cache cleared successfully"}
     except Exception as e:
@@ -858,7 +848,6 @@ async def detailed_health_check(api_key: str = Depends(verify_api_key)):
     try:
         stats = await key_manager.get_stats()
         basic_healthy = stats["active_keys"] > 0
-        # Corrected: Access modules via the performance module
         cache_stats = performance.response_cache.get_stats()
         cache_healthy = cache_stats["hit_rate"] is not None
         http_stats = performance.http_client.get_stats()
