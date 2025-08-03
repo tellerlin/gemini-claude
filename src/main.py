@@ -123,7 +123,6 @@ async def verify_admin_key(
     raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Invalid admin API key")
 
 class GeminiKeyManager:
-    # ... (No changes needed in this class) ...
     def __init__(self, config: AppConfig):
         self.config = config
         self.keys: Dict[str, APIKeyInfo] = {}
@@ -277,7 +276,6 @@ class GeminiKeyManager:
 
     async def reset_key(self, key_prefix: str) -> Dict[str, Any]:
         async with self.lock:
-            # ... (No changes needed in this method) ...
             if len(key_prefix) < 4:
                 return {"error": "Key prefix must be at least 4 characters long"}
             matched_keys = [key for key in self.keys.keys() if key.startswith(key_prefix)]
@@ -298,7 +296,6 @@ class GeminiKeyManager:
 
     async def attempt_key_recovery(self, key_prefix: str) -> Dict[str, Any]:
         async with self.lock:
-            # ... (No changes needed in this method) ...
             if len(key_prefix) < 4:
                 return {"error": "Key prefix must be at least 4 characters long"}
             matched_keys = [key for key in self.keys.keys() if key.startswith(key_prefix)]
@@ -321,7 +318,6 @@ class GeminiKeyManager:
 
 class LiteLLMAdapter:
     def __init__(self, config: AppConfig, key_manager: GeminiKeyManager, api_config: AnthropicAPIConfig):
-        # ... (No changes needed in this class init) ...
         self.config = config
         self.key_manager = key_manager
         self.anthropic_to_gemini = api_config.anthropic_to_gemini
@@ -343,7 +339,6 @@ class LiteLLMAdapter:
 
     @monitor_errors
     async def chat_completion(self, request: ChatRequest) -> Union[Dict, Any]:
-        # ... (No changes needed in this method) ...
         request_hash = hashlib.md5(json.dumps({
             "model": request.model, "messages": request.messages,
             "temperature": request.temperature, "stream": request.stream
@@ -374,21 +369,20 @@ class LiteLLMAdapter:
                         del self._request_deduplicator[request_hash]
     
     async def _execute_chat_completion(self, request: ChatRequest) -> Union[Dict, Any]:
-        # ... (No changes needed in this method) ...
         last_error = "No active keys to attempt request."
         attempted_keys = set()
         
         cache_key = None
 
         if not request.stream and self.config.CACHE_ENABLED and performance.response_cache:
-    cache_key = {
-        "model": request.model, "messages": request.messages,
-        "temperature": request.temperature, "max_tokens": request.max_tokens
-    }
-    cached_response = await performance.response_cache.get(cache_key)
-    if cached_response:
-        logger.debug("Cache hit for chat completion request.")
-        return cached_response
+            cache_key = {
+                "model": request.model, "messages": request.messages,
+                "temperature": request.temperature, "max_tokens": request.max_tokens
+            }
+            cached_response = await performance.response_cache.get(cache_key)
+            if cached_response:
+                logger.debug("Cache hit for chat completion request.")
+                return cached_response
         
         max_concurrent = min(3, len(self.key_manager.keys))
         semaphore = asyncio.Semaphore(max_concurrent)
@@ -427,10 +421,7 @@ class LiteLLMAdapter:
         if not active_keys:
             raise HTTPException(status_code=503, detail="No available API keys")
         
-        # This is a placeholder for a better key selection logic. In a real scenario, you'd use the key_score.
-        # For simplicity in this example, we'll just sort by a pseudo-random factor.
         def _select_best_key(k_info):
-            # A simple scoring function placeholder
             return random.random()
 
         keys_to_try = sorted(active_keys, key=_select_best_key, reverse=True)[:max_concurrent]
@@ -447,7 +438,7 @@ class LiteLLMAdapter:
                     result = task.result()
                     if result:
                         if not request.stream and cache_key and self.config.CACHE_ENABLED and performance.response_cache:
-    await performance.response_cache.set(cache_key, result.model_dump() if hasattr(result, 'model_dump') else result)
+                            await performance.response_cache.set(cache_key, result.model_dump() if hasattr(result, 'model_dump') else result)
                         return result
                 except Exception as e:
                     last_error = str(e)
@@ -460,7 +451,6 @@ class LiteLLMAdapter:
     async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
         gemini_request_dict = self.anthropic_to_gemini.convert_request(request)
         
-        # This logic is correct and doesn't need changes. It correctly prepares the request.
         chat_request_data = {
             "messages": gemini_request_dict["messages"],
             "model": gemini_request_dict["model"],
@@ -469,13 +459,11 @@ class LiteLLMAdapter:
             "stream": gemini_request_dict["stream"]
         }
         
-        # The Litellm model name should not contain the "gemini/" prefix
         if chat_request_data["model"].startswith("gemini/"):
             chat_request_data["model"] = chat_request_data["model"].replace("gemini/", "")
 
         chat_request = ChatRequest(**chat_request_data)
         
-        # Add tools and system instructions to the litellm call via `acompletion` kwargs
         litellm_kwargs = {}
         if "tools" in gemini_request_dict:
             litellm_kwargs["tools"] = gemini_request_dict["tools"]
@@ -483,33 +471,26 @@ class LiteLLMAdapter:
              litellm_kwargs["tool_choice"] = gemini_request_dict["tool_config"]["function_calling_config"]["mode"]
 
         if "system_instruction" in gemini_request_dict:
-            # LiteLLM expects system message in the messages list
             chat_request.messages.insert(0, {"role": "system", "content": gemini_request_dict["system_instruction"]["parts"][0]["text"]})
 
         if request.stream:
-            # For streaming, we need to call litellm directly with all params
             litellm_kwargs.update(chat_request.model_dump())
             gemini_stream = await self.chat_completion_with_litellm(litellm_kwargs)
             streaming_generator = StreamingResponseGenerator(request, self.claude_code_simulator)
             return streaming_generator.generate_sse_events(gemini_stream)
         else:
-            # For non-streaming, we can use the existing chat_completion flow which has retries/caching
-            # but we need a way to pass tools to it. Let's modify it slightly.
-            # For now, we call litellm directly for simplicity.
             litellm_kwargs.update(chat_request.model_dump())
             gemini_response_model = await self.chat_completion_with_litellm(litellm_kwargs)
             gemini_response_dict = gemini_response_model.model_dump()
             return await self.gemini_to_anthropic.convert_response(gemini_response_dict, request)
 
     async def chat_completion_with_litellm(self, litellm_kwargs: Dict) -> Any:
-        # A simplified wrapper around litellm to handle key selection and failures
         key_info = await self.key_manager.get_available_key()
         if not key_info:
             raise HTTPException(status_code=503, detail="No available API keys")
         
         litellm_kwargs["api_key"] = key_info.key
         
-        # Ensure model name is prefixed for litellm
         litellm_kwargs["model"] = f"gemini/{litellm_kwargs['model']}"
 
         try:
@@ -531,7 +512,6 @@ key_manager: Optional[GeminiKeyManager] = None
 adapter: Optional[LiteLLMAdapter] = None
 
 class RateLimiter:
-    # ... (No changes needed in this class) ...
     def __init__(self, max_requests: int = 100, window_seconds: int = 60):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
@@ -562,7 +542,6 @@ async def check_rate_limit(client_key: str = Depends(verify_api_key)):
     return client_key
 
 async def optimized_health_check_task():
-    # ... (No changes needed in this task) ...
     while True:
         try:
             if key_manager is not None:
@@ -582,7 +561,6 @@ async def optimized_health_check_task():
 async def lifespan(app: FastAPI):
     global key_manager, adapter, security_config, api_config
     
-    # ... (No changes needed in lifespan) ...
     os.makedirs("logs", exist_ok=True)
     logger.add("logs/gemini_adapter_{time}.log", rotation="1 day", retention="7 days", level="INFO", enqueue=True, catch=True)
     try:
@@ -616,7 +594,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# ... (No changes needed for stream_generator and root/health endpoints) ...
 async def stream_generator(response_stream):
     try:
         async for chunk in response_stream:
@@ -676,7 +653,6 @@ async def create_message(request: MessagesRequest, raw_request: Request, api_key
 async def options_messages():
     return JSONResponse(content={"status": "ok"}, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, Anthropic-Version"})
 
-# THIS ENDPOINT IS NOW CORRECTLY USING THE CENTRALIZED `TokenCountRequest`
 @app.post("/v1/messages/count_tokens", response_model=TokenCountResponse)
 async def count_tokens(request: TokenCountRequest, api_key: str = Depends(verify_api_key)):
     if not adapter:
@@ -688,7 +664,6 @@ async def count_tokens(request: TokenCountRequest, api_key: str = Depends(verify
                 system=request.system, tools=request.tools
             )
         )
-        # Add system message to messages list for litellm
         if "system_instruction" in gemini_request_dict:
             gemini_request_dict["messages"].insert(0, {"role": "system", "content": gemini_request_dict["system_instruction"]["parts"][0]["text"]})
         
@@ -701,7 +676,6 @@ async def count_tokens(request: TokenCountRequest, api_key: str = Depends(verify
         logger.error(f"Error counting tokens: {e}")
         raise HTTPException(status_code=500, detail="Token counting failed")
 
-# ... (No changes needed for the rest of the endpoints: /v1/chat/completions, /stats, etc.) ...
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     if not adapter:
@@ -729,7 +703,6 @@ async def get_models(api_key: str = Depends(verify_api_key)):
     return {
         "object": "list",
         "data": [
-            # 使用更通用、更简洁的ID
             {"id": "claude-3-sonnet", "object": "model", "owned_by": "anthropic"},
             {"id": "claude-3-opus", "object": "model", "owned_by": "anthropic"},
             {"id": "claude-3-haiku", "object": "model", "owned_by": "anthropic"}
@@ -758,7 +731,6 @@ async def recover_key_endpoint(key_prefix: str, api_key: str = Depends(verify_ad
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception for request {request.method} {request.url}: {exc}", exc_info=True)
     if isinstance(exc, HTTPException):
-        # Prevent logging HTTPException details twice if they are already handled
         return JSONResponse(status_code=exc.status_code, content={"error": {"message": exc.detail, "type": "http_exception"}})
     return JSONResponse(status_code=500, content={"error": {"message": "An internal server error occurred.", "type": "internal_error"}})
 
