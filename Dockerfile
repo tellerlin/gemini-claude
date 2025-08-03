@@ -56,4 +56,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Use Gunicorn with Uvicorn workers, and read the number of workers from the
 # SERVICE_WORKERS environment variable, defaulting to 1 if not set.
-CMD ["gunicorn", "main:app", "-w", "${SERVICE_WORKERS:-1}", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000"]
+CMD gunicorn main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
