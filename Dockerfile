@@ -59,5 +59,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # [cite_start]SERVICE_WORKERS environment variable, defaulting to 1 if not set. [cite: 11]
 # CMD gunicorn main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
 
-# TEMPORARY COMMAND FOR DEBUGGING
-CMD ["python", "-c", "import main"]
+# NEW, MORE PRECISE COMMAND FOR DEBUGGING
+CMD ["python", "-c", "import main; print(main.app)"]
