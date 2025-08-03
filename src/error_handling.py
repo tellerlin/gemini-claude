@@ -286,7 +286,7 @@ error_monitor = ErrorMonitor()
 key_manager_circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
 api_call_circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
 
-async def monitor_errors(func):
+def monitor_errors(func):
     """Decorator to monitor errors in functions"""
     async def wrapper(*args, **kwargs):
         try:
