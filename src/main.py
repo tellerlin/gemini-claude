@@ -24,7 +24,6 @@ import hashlib
 from config import get_config, AppConfig
 from error_handling import error_monitor, monitor_errors, ErrorClassifier
 import performance
-from performance import get_performance_stats, initialize_performance_modules, monitor_performance
 # Models are now imported from anthropic_api
 from anthropic_api import (
     MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
@@ -380,15 +379,16 @@ class LiteLLMAdapter:
         attempted_keys = set()
         
         cache_key = None
-        if not request.stream and self.config.CACHE_ENABLED:
-            cache_key = {
-                "model": request.model, "messages": request.messages,
-                "temperature": request.temperature, "max_tokens": request.max_tokens
-            }
-            cached_response = await performance.response_cache.get(cache_key)
-            if cached_response:
-                logger.debug("Cache hit for chat completion request.")
-                return cached_response
+
+        if not request.stream and self.config.CACHE_ENABLED and performance.response_cache:
+    cache_key = {
+        "model": request.model, "messages": request.messages,
+        "temperature": request.temperature, "max_tokens": request.max_tokens
+    }
+    cached_response = await performance.response_cache.get(cache_key)
+    if cached_response:
+        logger.debug("Cache hit for chat completion request.")
+        return cached_response
         
         max_concurrent = min(3, len(self.key_manager.keys))
         semaphore = asyncio.Semaphore(max_concurrent)
@@ -446,8 +446,8 @@ class LiteLLMAdapter:
                 try:
                     result = task.result()
                     if result:
-                        if not request.stream and cache_key and self.config.CACHE_ENABLED:
-                            await performance.response_cache.set(cache_key, result.model_dump() if hasattr(result, 'model_dump') else result)
+                        if not request.stream and cache_key and self.config.CACHE_ENABLED and performance.response_cache:
+    await performance.response_cache.set(cache_key, result.model_dump() if hasattr(result, 'model_dump') else result)
                         return result
                 except Exception as e:
                     last_error = str(e)
@@ -588,7 +588,7 @@ async def lifespan(app: FastAPI):
     try:
         app.state.start_time = time.time()
         app_config = get_config()
-        initialize_performance_modules(app_config)
+        performance.initialize_performance_modules(app_config)
         security_config = SecurityConfig(app_config)
         
         working_dir = os.getenv("CLAUDE_CODE_WORKING_DIR", ".")
