@@ -42,7 +42,6 @@ class AppConfig(BaseSettings):
     SERVICE_ENABLE_METRICS: bool = Field(True, description="Enable metrics collection")
     SERVICE_ENABLE_HEALTH_CHECK: bool = Field(True, description="Enable health check endpoint")
     
-    # 关键修复：将类型改为 Union[str, List[str]]，让 Pydantic 接受字符串输入
     SERVICE_CORS_ORIGINS: Union[str, List[str]] = Field(default="*", description="CORS allowed origins")
     
     # =============================================
@@ -75,20 +74,6 @@ class AppConfig(BaseSettings):
     CACHE_MAX_SIZE: int = Field(1000, description="Maximum cache size")
     CACHE_TTL: int = Field(300, description="Cache TTL in seconds")
     CACHE_KEY_PREFIX: str = Field("gemini_adapter", description="Cache key prefix")
-    
-    # =============================================
-    # Performance Configuration
-    # =============================================
-    PERFORMANCE_MAX_KEEPALIVE_CONNECTIONS: int = Field(20, description="Max keepalive connections")
-    PERFORMANCE_MAX_CONNECTIONS: int = Field(100, description="Max total connections")
-    PERFORMANCE_KEEPALIVE_EXPIRY: float = Field(30.0, description="Keepalive expiry time")
-    PERFORMANCE_CONNECT_TIMEOUT: float = Field(10.0, description="Connection timeout")
-    PERFORMANCE_READ_TIMEOUT: float = Field(45.0, description="Read timeout")
-    PERFORMANCE_WRITE_TIMEOUT: float = Field(10.0, description="Write timeout")
-    PERFORMANCE_POOL_TIMEOUT: float = Field(5.0, description="Pool timeout")
-    PERFORMANCE_HTTP2_ENABLED: bool = Field(True, description="Enable HTTP/2")
-    PERFORMANCE_TRUST_ENV: bool = Field(True, description="Trust environment for proxy support")
-    PERFORMANCE_VERIFY_SSL: bool = Field(True, description="Verify SSL certificates")
     
     # =============================================
     # Database Configuration (Optional)
@@ -127,7 +112,6 @@ class AppConfig(BaseSettings):
         if isinstance(v, str):
             if not v.strip():
                 return ["*"]
-            # 如果是单个 * 或者逗号分隔的字符串，转换为列表
             return [origin.strip() for origin in v.split(',') if origin.strip()]
         elif isinstance(v, list):
             return v
@@ -136,7 +120,6 @@ class AppConfig(BaseSettings):
     def model_post_init(self, __context):
         """Post-initialization validation and setup"""
         
-        # 确保所有需要列表的字段都是列表类型
         if isinstance(self.SERVICE_CORS_ORIGINS, str):
             self.SERVICE_CORS_ORIGINS = [origin.strip() for origin in self.SERVICE_CORS_ORIGINS.split(',') if origin.strip()]
         
@@ -162,9 +145,6 @@ class AppConfig(BaseSettings):
         
         if self.CACHE_ENABLED and self.CACHE_MAX_SIZE <= 0:
             raise ValueError("Cache max_size must be positive when caching is enabled")
-        
-        if self.PERFORMANCE_MAX_CONNECTIONS <= 0:
-            raise ValueError("Max connections must be positive")
         
         logger.info(f"Configuration validated for {self.SERVICE_ENVIRONMENT.value} environment")
 

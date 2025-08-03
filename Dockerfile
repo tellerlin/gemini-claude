@@ -51,13 +51,11 @@ USER appuser
 # Expose the port the app runs on
 EXPOSE 8000
 
-# Fix Healthcheck to use a library that is actually installed (httpx)
+# Fix Healthcheck to use a library that is guaranteed to be available (urllib)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10).read()" || exit 1
 
 # The command now correctly points to the app object inside the src package.
 # Use Gunicorn with Uvicorn workers, and read the number of workers from the
 # SERVICE_WORKERS environment variable, defaulting to 1 if not set.
 CMD gunicorn src.main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
-
-

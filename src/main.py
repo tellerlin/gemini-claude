@@ -546,7 +546,6 @@ async def lifespan(app: FastAPI):
         security_config = SecurityConfig(app_config)
         key_manager = GeminiKeyManager(app_config)
         adapter = LiteLLMAdapter(app_config, key_manager)
-        await performance.http_client.initialize()
         health_task = asyncio.create_task(optimized_health_check_task())
         logger.info("Gemini Claude Adapter v2.1.0 started successfully with optimizations.")
         logger.info(f"Environment: {app_config.SERVICE_ENVIRONMENT.value}")
@@ -568,8 +567,6 @@ async def lifespan(app: FastAPI):
                 await health_task
             except asyncio.CancelledError:
                 pass
-        if performance.http_client:
-            await performance.http_client.close()
         logger.info("Gemini Claude Adapter shutting down.")
 
 app = FastAPI(
@@ -850,15 +847,12 @@ async def detailed_health_check(api_key: str = Depends(verify_api_key)):
         basic_healthy = stats["active_keys"] > 0
         cache_stats = performance.response_cache.get_stats()
         cache_healthy = cache_stats["hit_rate"] is not None
-        http_stats = performance.http_client.get_stats()
-        http_healthy = http_stats["error_rate"] < 5
-        overall_healthy = basic_healthy and cache_healthy and http_healthy
+        overall_healthy = basic_healthy and cache_healthy
         return {
             "status": "healthy" if overall_healthy else "degraded",
             "components": {
                 "key_manager": {"healthy": basic_healthy, "active_keys": stats["active_keys"]},
                 "cache": {"healthy": cache_healthy, "stats": cache_stats},
-                "http_client": {"healthy": http_healthy, "stats": http_stats}
             },
             "timestamp": datetime.now().isoformat(),
             "version": "2.1.0"

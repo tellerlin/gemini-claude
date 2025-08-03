@@ -6,16 +6,13 @@ import time
 import json
 import hashlib
 import asyncio
-from typing import Dict, Any, Optional, List, Union
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-import httpx
+from typing import Dict, Any, Optional
 from cachetools import TTLCache
 import logging
 from contextlib import asynccontextmanager
 from collections import deque, defaultdict
 
-from .config import get_config, AppConfig
+from .config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -121,93 +118,6 @@ class ResponseCache:
         self.hit_count = 0
         self.miss_count = 0
         logger.info("Cache cleared")
-
-class OptimizedHTTPClient:
-    """Optimized HTTP client with enhanced connection pooling and performance monitoring"""
-    
-    def __init__(self, config: AppConfig):
-        self.config = config
-        self.client: Optional[httpx.AsyncClient] = None
-        self.request_count = 0
-        self.error_count = 0
-        self.total_request_time = 0.0
-        self.lock = asyncio.Lock()
-        self._session_pool = {}
-        
-    async def initialize(self):
-        """Initialize the HTTP client with enhanced connection pooling"""
-        async with self.lock:
-            if self.client is None:
-                limits = httpx.Limits(
-                    max_keepalive_connections=self.config.PERFORMANCE_MAX_KEEPALIVE_CONNECTIONS,
-                    max_connections=self.config.PERFORMANCE_MAX_CONNECTIONS,
-                    keepalive_expiry=self.config.PERFORMANCE_KEEPALIVE_EXPIRY
-                )
-                
-                timeout = httpx.Timeout(
-                    connect=self.config.PERFORMANCE_CONNECT_TIMEOUT,
-                    read=self.config.PERFORMANCE_READ_TIMEOUT,
-                    write=self.config.PERFORMANCE_WRITE_TIMEOUT,
-                    pool=self.config.PERFORMANCE_POOL_TIMEOUT
-                )
-                
-                self.client = httpx.AsyncClient(
-                    limits=limits,
-                    timeout=timeout,
-                    http2=self.config.PERFORMANCE_HTTP2_ENABLED,
-                    trust_env=self.config.PERFORMANCE_TRUST_ENV,
-                    verify=self.config.PERFORMANCE_VERIFY_SSL
-                )
-                logger.info("Optimized HTTP client initialized with enhanced connection pooling")
-    
-    async def close(self):
-        """Close the HTTP client"""
-        async with self.lock:
-            if self.client:
-                await self.client.aclose()
-                self.client = None
-                logger.info("HTTP client closed")
-    
-    async def request(self, method: str, url: str, **kwargs) -> httpx.Response:
-        """Make an HTTP request with performance monitoring"""
-        if not self.client:
-            await self.initialize()
-        
-        start_time = time.time()
-        self.request_count += 1
-        
-        try:
-            response = await self.client.request(method, url, **kwargs)
-            request_time = time.time() - start_time
-            self.total_request_time += request_time
-            
-            logger.debug(f"HTTP {method} {url} - {response.status_code} - {request_time:.3f}s")
-            return response
-            
-        except Exception as e:
-            self.error_count += 1
-            request_time = time.time() - start_time
-            logger.error(f"HTTP {method} {url} - Error: {e} - {request_time:.3f}s")
-            raise
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Get HTTP client statistics"""
-        avg_request_time = (self.total_request_time / self.request_count) if self.request_count > 0 else 0
-        error_rate = (self.error_count / self.request_count * 100) if self.request_count > 0 else 0
-        
-        return {
-            "request_count": self.request_count,
-            "error_count": self.error_count,
-            "error_rate": round(error_rate, 2),
-            "avg_request_time": round(avg_request_time, 3),
-            "total_request_time": round(self.total_request_time, 3),
-            "client_initialized": self.client is not None,
-            "config": {
-                "max_keepalive_connections": self.config.PERFORMANCE_MAX_KEEPALIVE_CONNECTIONS,
-                "max_connections": self.config.PERFORMANCE_MAX_CONNECTIONS,
-                "http2_enabled": self.config.PERFORMANCE_HTTP2_ENABLED
-            }
-        }
 
 class PerformanceMonitor:
     """Performance monitoring for the adapter"""
@@ -340,9 +250,7 @@ class BatchProcessor:
         pass
 
 # Initialize these variables as None at the module level.
-# They will be properly initialized inside the application's lifespan.
 response_cache: Optional[ResponseCache] = None
-http_client: Optional[OptimizedHTTPClient] = None
 performance_monitor: PerformanceMonitor = PerformanceMonitor()
 batch_processor: BatchProcessor = BatchProcessor()
 
@@ -350,11 +258,9 @@ def initialize_performance_modules(config: AppConfig):
     """
     Initializes performance-related modules after config is loaded.
     """
-    global response_cache, http_client
+    global response_cache
     response_cache = ResponseCache(config)
-    http_client = OptimizedHTTPClient(config)
     logger.info("Performance modules initialized.")
-
 
 @asynccontextmanager
 async def monitor_performance(endpoint: str):
@@ -371,16 +277,9 @@ async def monitor_performance(endpoint: str):
         duration = time.time() - start_time
         await performance_monitor.record_request(endpoint, duration, success)
 
-async def get_optimized_http_client() -> httpx.AsyncClient:
-    """Get the optimized HTTP client"""
-    if not http_client.client:
-        await http_client.initialize()
-    return http_client.client
-
 def get_performance_stats() -> Dict[str, Any]:
     """Get comprehensive performance statistics"""
     return {
         "cache_stats": response_cache.get_stats(),
-        "http_client_stats": http_client.get_stats(),
         "performance_stats": performance_monitor.get_performance_stats()
     }
