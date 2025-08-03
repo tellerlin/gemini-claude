@@ -57,4 +57,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # --- MODIFIED: The command now correctly points to the app object in main.py ---
 # Use Gunicorn with Uvicorn workers, and read the number of workers from the
 # [cite_start]SERVICE_WORKERS environment variable, defaulting to 1 if not set. [cite: 11]
-CMD gunicorn main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
+# CMD gunicorn main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
+
+# TEMPORARY COMMAND FOR DEBUGGING
+CMD ["python", "-c", "import main"]
