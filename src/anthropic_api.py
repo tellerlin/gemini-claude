@@ -573,14 +573,23 @@ class AnthropicToGeminiConverter:
         pass
     
     def convert_model(self, anthropic_model: str) -> str:
+        """
+        Converts an Anthropic model name to a corresponding Gemini model name
+        with flexible matching.
+
+        - "sonnet" and "opus" variants map to "gemini-2.5-pro".
+        - "haiku" variants map to "gemini-2.0-flash".
+        - Defaults to "gemini-2.5-pro" for any other model.
+        """
         anthropic_model_lower = anthropic_model.lower()
-        if "opus" in anthropic_model_lower or "sonnet" in anthropic_model_lower:
-            return "gemini-1.5-pro-latest"
+        
+        if "sonnet" in anthropic_model_lower or "opus" in anthropic_model_lower:
+            return "gemini-2.5-pro"
         elif "haiku" in anthropic_model_lower:
-            return "gemini-1.5-flash-latest"
+            return "gemini-2.0-flash"
         else:
-            logger.warning(f"Model '{anthropic_model}' fallback to 'gemini-1.5-pro-latest'.")
-            return "gemini-1.5-pro-latest"
+            logger.warning(f"Model '{anthropic_model}' not found in specific mappings, falling back to default 'gemini-2.5-pro'.")
+            return "gemini-2.5-pro"
 
     def convert_request(self, request: MessagesRequest) -> Dict[str, Any]:
         gemini_model = self.convert_model(request.model)

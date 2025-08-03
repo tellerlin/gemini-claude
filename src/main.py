@@ -20,31 +20,18 @@ from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from collections import defaultdict, deque
 import hashlib
 
-# --- MODIFIED: Imports adjusted for new structure ---
-try:
-    from .config import get_config, AppConfig
-    from .error_handling import error_monitor, monitor_errors, ErrorClassifier
-    from . import performance
-    from .performance import get_performance_stats, initialize_performance_modules, monitor_performance
-    # Models are now imported from anthropic_api
-    from .anthropic_api import (
-        MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
-        AnthropicToGeminiConverter, GeminiToAnthropicConverter,
-        StreamingResponseGenerator, ToolConverter, log_request_beautifully,
-        AnthropicAPIConfig
-    )
-except ImportError:
-    from config import get_config, AppConfig
-    from error_handling import error_monitor, monitor_errors, ErrorClassifier
-    import performance
-    from performance import get_performance_stats, initialize_performance_modules, monitor_performance
-    # Models are now imported from anthropic_api
-    from anthropic_api import (
-        MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
-        AnthropicToGeminiConverter, GeminiToAnthropicConverter,
-        StreamingResponseGenerator, ToolConverter, log_request_beautifully,
-        AnthropicAPIConfig
-    )
+# --- MODIFIED: Imports adjusted for flat structure ---
+from config import get_config, AppConfig
+from error_handling import error_monitor, monitor_errors, ErrorClassifier
+import performance
+from performance import get_performance_stats, initialize_performance_modules, monitor_performance
+# Models are now imported from anthropic_api
+from anthropic_api import (
+    MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
+    AnthropicToGeminiConverter, GeminiToAnthropicConverter,
+    StreamingResponseGenerator, ToolConverter, log_request_beautifully,
+    AnthropicAPIConfig
+)
 
 load_dotenv()
 
@@ -742,10 +729,10 @@ async def get_models(api_key: str = Depends(verify_api_key)):
     return {
         "object": "list",
         "data": [
-            {"id": "claude-3-5-sonnet-20240620", "object": "model", "owned_by": "anthropic"},
-            {"id": "claude-3-opus-20240229", "object": "model", "owned_by": "anthropic"},
-            {"id": "claude-3-sonnet-20240229", "object": "model", "owned_by": "anthropic"},
-            {"id": "claude-3-haiku-20240307", "object": "model", "owned_by": "anthropic"}
+            # 使用更通用、更简洁的ID
+            {"id": "claude-3-sonnet", "object": "model", "owned_by": "anthropic"},
+            {"id": "claude-3-opus", "object": "model", "owned_by": "anthropic"},
+            {"id": "claude-3-haiku", "object": "model", "owned_by": "anthropic"}
         ]
     }
 

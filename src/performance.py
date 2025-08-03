@@ -12,7 +12,8 @@ import logging
 from contextlib import asynccontextmanager
 from collections import deque, defaultdict
 
-from .config import AppConfig
+# --- MODIFIED: Import adjusted for flat structure ---
+from config import AppConfig
 
 logger = logging.getLogger(__name__)
 

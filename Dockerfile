@@ -1,4 +1,4 @@
-# Use multi-stage builds to optimize the final image size
+# [cite_start]Use multi-stage builds to optimize the final image size [cite: 6]
 FROM python:3.11-slim as builder
 
 # Set build arguments
@@ -15,7 +15,7 @@ WORKDIR /app
 # Copy requirements file
 COPY requirements.txt .
 
-# Install Python dependencies. When run as root, --user installs to /root/.local
+# Install Python dependencies. [cite_start]When run as root, --user installs to /root/.local [cite: 7]
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # --- Production Stage ---
@@ -24,23 +24,22 @@ FROM python:3.11-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-# Add the user's local bin to the PATH. This is where pip installs executables.
+# Add the user's local bin to the PATH. [cite_start]This is where pip installs executables. [cite: 8]
 ENV PATH="/home/appuser/.local/bin:$PATH"
 
 # Create a non-root user to run the application
 RUN useradd --create-home --shell /bin/bash appuser
 
 # Copy the installed packages from the builder stage
-# CORRECTED: The source path is /root/.local because the previous stage ran as root.
+# [cite_start]The source path is /root/.local because the previous stage ran as root. [cite: 9]
 COPY --from=builder /root/.local /home/appuser/.local
 
 # Set the working directory
 WORKDIR /app
 
+# --- MODIFIED: Copy all source files from the build context root ---
 # Copy the source code, chown to the non-root user
-COPY --chown=appuser:appuser ./src ./src
-# Copy other root files that might be needed
-COPY --chown=appuser:appuser requirements.txt .env.example ./
+COPY --chown=appuser:appuser . .
 
 # Create the logs directory and set ownership
 RUN mkdir -p logs && chown appuser:appuser logs
@@ -53,9 +52,9 @@ EXPOSE 8000
 
 # Fix Healthcheck to use a library that is guaranteed to be available (urllib)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10).read()" || exit 1
+    [cite_start]CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10).read()" || exit 1 [cite: 10]
 
-# The command now correctly points to the app object inside the src package.
+# --- MODIFIED: The command now correctly points to the app object in main.py ---
 # Use Gunicorn with Uvicorn workers, and read the number of workers from the
-# SERVICE_WORKERS environment variable, defaulting to 1 if not set.
-CMD gunicorn src.main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
+# [cite_start]SERVICE_WORKERS environment variable, defaulting to 1 if not set. [cite: 11]
+CMD gunicorn main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
