@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from itertools import cycle
 import json
-import httpx
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
@@ -109,10 +108,6 @@ async def verify_api_key(
     api_key: Optional[str] = Depends(api_key_header),
     bearer_token: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)
 ) -> str:
-    """
-    Verify API key from either X-API-Key header or Bearer token
-    Returns the validated key or raises HTTPException
-    """
     if not security_config.security_enabled:
         logger.debug("Security disabled, allowing access")
         return "insecure_mode"
@@ -135,9 +130,6 @@ async def verify_admin_key(
     api_key: Optional[str] = Depends(api_key_header),
     bearer_token: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)
 ) -> str:
-    """
-    Verify admin API key for management endpoints
-    """
     if not security_config.admin_keys:
         return await verify_api_key(api_key, bearer_token)
 
@@ -444,7 +436,8 @@ class LiteLLMAdapter:
             raise HTTPException(status_code=502, detail="No available API keys")
         keys_to_try = active_keys[:max_concurrent]
         try:
-            tasks = [try_key_request(key_info) for key_info in keys_to_try]
+            # === FINAL FIX: Use asyncio.create_task for robust concurrency ===
+            tasks = [asyncio.create_task(try_key_request(key_info)) for key_info in keys_to_try]
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
