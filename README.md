@@ -28,7 +28,7 @@ A high-performance, secure Gemini adapter with **complete Anthropic API compatib
 
 ```bash
 # Clone the repository
-git clone [https://github.com/tellerlin/gemini-claude.git](https://github.com/tellerlin/gemini-claude.git)
+git clone https://github.com/tellerlin/gemini-claude.git
 cd gemini-claude
 
 # Create your configuration file from the example

@@ -30,7 +30,7 @@
 
 ```bash
 # 克隆代码仓库
-git clone [https://github.com/tellerlin/gemini-claude.git](https://github.com/tellerlin/gemini-claude.git)
+git clone https://github.com/tellerlin/gemini-claude.git
 cd gemini-claude
 
 # 从示例文件创建你的配置文件
