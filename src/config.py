@@ -41,7 +41,7 @@ class AppConfig(BaseSettings):
     SERVICE_LOG_LEVEL: LogLevel = Field(LogLevel.INFO, description="Log level")
     SERVICE_ENABLE_METRICS: bool = Field(True, description="Enable metrics collection")
     SERVICE_ENABLE_HEALTH_CHECK: bool = Field(True, description="Enable health check endpoint")
-    SERVICE_CORS_ORIGINS: List[str] = Field(["*"], description="CORS allowed origins")
+    SERVICE_CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["*"], description="CORS allowed origins")
     
     # =============================================
     # Gemini API Configuration - [REQUIRED]
@@ -116,13 +116,14 @@ class AppConfig(BaseSettings):
             return [str(key).strip() for key in v if str(key).strip()]
         return v
 
-    # [MODIFIED] This validator now correctly handles comma-separated strings for CORS origins.
     @field_validator('SERVICE_CORS_ORIGINS', mode='before')
     @classmethod
     def validate_cors_origins(cls, v):
         """Validate CORS origins from a comma-separated string."""
+        if v is None:
+            return ["*"]
         if isinstance(v, str):
-            if v.strip() == "*":
+            if not v.strip():
                 return ["*"]
             return [origin.strip() for origin in v.split(',') if origin.strip()]
         return v
@@ -172,7 +173,6 @@ def load_configuration() -> AppConfig:
         _config.log_configuration()
         return _config
     except Exception as e:
-        # Use a basic print here as the logger might not be configured yet.
         print(f"Failed to load configuration: {e}")
         raise
 
