@@ -52,7 +52,7 @@ EXPOSE 8000
 
 # Fix Healthcheck to use a library that is guaranteed to be available (urllib)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    [cite_start]CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10).read()" || exit 1 [cite: 10]
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10).read()" || exit 1
 
 # --- MODIFIED: The command now correctly points to the app object in main.py ---
 # Use Gunicorn with Uvicorn workers, and read the number of workers from the
