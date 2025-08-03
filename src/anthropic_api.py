@@ -133,14 +133,32 @@ class AnthropicToGeminiConverter:
             "claude-3-opus": "gemini-2.5-pro",
             "claude-3-sonnet": "gemini-2.5-pro",
             "claude-3-haiku": "gemini-2.5-flash",
+            # 添加新的、可能由客户端生成的模型名称前缀
+            "claude-sonnet-4": "gemini-2.5-pro",
         }
     
     def convert_model(self, anthropic_model: str) -> str:
-        """将 Anthropic 模型名转换为 Gemini 模型名"""
-        gemini_model = self.model_mapping.get(anthropic_model, "gemini-2.5-pro")
-        logger.debug(f"📋 MODEL MAPPING: {anthropic_model} → {gemini_model}")
-        return gemini_model
-    
+        """将 Anthropic 模型名转换为 Gemini 模型名，支持前缀匹配以兼容日期后缀"""
+        # 优先进行精确匹配
+        if anthropic_model in self.model_mapping:
+            gemini_model = self.model_mapping[anthropic_model]
+            logger.debug(f"📋 MODEL MAPPING (Exact): {anthropic_model} → {gemini_model}")
+            return gemini_model
+        
+        # 如果精确匹配失败，则按长度降序尝试前缀匹配
+        # 这可以确保 "claude-3-5-sonnet" 优先于 "claude-3-sonnet" 被匹配
+        sorted_keys = sorted(self.model_mapping.keys(), key=len, reverse=True)
+        for key in sorted_keys:
+            if anthropic_model.startswith(key):
+                gemini_model = self.model_mapping[key]
+                logger.debug(f"📋 MODEL MAPPING (Prefix): {anthropic_model} → {gemini_model}")
+                return gemini_model
+
+        # 如果所有匹配都失败，回退到默认值
+        default_model = "gemini-2.5-pro"
+        logger.warning(f"Model '{anthropic_model}' not found in mapping, falling back to default '{default_model}'")
+        return default_model
+
     def convert_messages(self, messages: List[Message]) -> List[Dict[str, str]]:
         """转换消息格式"""
         converted_messages = []
@@ -186,7 +204,8 @@ class AnthropicToGeminiConverter:
         if request.max_tokens:
             converted["max_tokens"] = request.max_tokens
         
-        logger.info(f"🔄 REQUEST CONVERSION: {request.model} → {gemini_model}")
+        # 此日志已移至 main.py 中，以包含更丰富的信息
+        # logger.info(f"🔄 REQUEST CONVERSION: {request.model} → {gemini_model}")
         return converted
 
 class GeminiToAnthropicConverter:
@@ -198,7 +217,6 @@ class GeminiToAnthropicConverter:
         output_tokens = 0
         
         if gemini_usage:
-            # 处理不同的usage格式
             if hasattr(gemini_usage, 'prompt_tokens'):
                 input_tokens = gemini_usage.prompt_tokens
             elif hasattr(gemini_usage, 'input_tokens'):
@@ -221,7 +239,7 @@ class GeminiToAnthropicConverter:
     def convert_content(self, gemini_content: str) -> List[ContentBlockText]:
         """转换内容，处理空内容的情况"""
         if not gemini_content:
-            gemini_content = ""  # 确保不返回None
+            gemini_content = ""
         return [ContentBlockText(type="text", text=str(gemini_content))]
     
     def convert_response(self, gemini_response, original_request: MessagesRequest) -> MessagesResponse:
@@ -231,17 +249,14 @@ class GeminiToAnthropicConverter:
             usage = None
             stop_reason = "end_turn"
             
-            # 处理不同格式的响应
             if hasattr(gemini_response, 'choices') and gemini_response.choices:
                 choice = gemini_response.choices[0]
                 
-                # 获取内容
                 if hasattr(choice, 'message') and hasattr(choice.message, 'content'):
                     content = choice.message.content or ""
                 elif hasattr(choice, 'text'):
                     content = choice.text or ""
                 
-                # 获取停止原因
                 if hasattr(choice, 'finish_reason'):
                     finish_reason = choice.finish_reason
                     if finish_reason == 'length':
@@ -251,11 +266,9 @@ class GeminiToAnthropicConverter:
                     elif finish_reason == 'function_call':
                         stop_reason = "tool_use"
                 
-                # 获取使用统计
                 usage = getattr(gemini_response, 'usage', None)
                 
             elif isinstance(gemini_response, dict):
-                # 处理字典格式的响应
                 choices = gemini_response.get('choices', [])
                 if choices:
                     choice = choices[0]
@@ -270,7 +283,6 @@ class GeminiToAnthropicConverter:
                 
                 usage = gemini_response.get('usage')
             
-            # 生成响应ID
             response_id = f"msg_{uuid.uuid4().hex[:24]}"
             
             return MessagesResponse(
@@ -287,7 +299,6 @@ class GeminiToAnthropicConverter:
             logger.error(f"Response type: {type(gemini_response)}")
             logger.error(f"Response content: {str(gemini_response)[:500]}...")
             
-            # 返回错误响应
             return MessagesResponse(
                 id=f"msg_{uuid.uuid4().hex[:24]}",
                 model=original_request.model,
@@ -305,21 +316,15 @@ class StreamingResponseGenerator:
     def __init__(self, original_request: MessagesRequest):
         self.original_request = original_request
         self.message_id = f"msg_{uuid.uuid4().hex[:24]}"
-        self.input_tokens = 0  # 添加输入token计数
+        self.input_tokens = 0
     
     async def generate_sse_events(self, gemini_stream) -> AsyncGenerator[str, None]:
         """生成 SSE 事件流"""
         try:
-            # 计算输入tokens（粗略估算）
             self.input_tokens = self._estimate_input_tokens()
             
-            # 发送 message_start 事件
             yield self._create_message_start()
-            
-            # 发送 content_block_start 事件
             yield self._create_content_block_start()
-            
-            # 发送 ping 事件
             yield self._create_ping()
             
             accumulated_text = ""
@@ -327,12 +332,10 @@ class StreamingResponseGenerator:
             chunk_count = 0
             last_ping_time = time.time()
             
-            # 处理流式内容
             async for chunk in gemini_stream:
                 chunk_count += 1
                 current_time = time.time()
                 
-                # 每30秒发送一次ping以保持连接
                 if current_time - last_ping_time > 30:
                     yield self._create_ping()
                     last_ping_time = current_time
@@ -347,7 +350,6 @@ class StreamingResponseGenerator:
                                 output_tokens += self._estimate_token_count(content)
                                 yield self._create_content_block_delta(content)
                     
-                    # 检查是否有使用统计
                     if hasattr(chunk, 'usage') and chunk.usage:
                         usage = chunk.usage
                         if hasattr(usage, 'completion_tokens'):
@@ -359,7 +361,6 @@ class StreamingResponseGenerator:
                     logger.warning(f"Error processing chunk {chunk_count}: {chunk_error}")
                     continue
             
-            # 发送结束事件
             yield self._create_content_block_stop()
             yield self._create_message_delta(output_tokens)
             yield self._create_message_stop()
@@ -424,12 +425,11 @@ class StreamingResponseGenerator:
                     if hasattr(block, 'text'):
                         total_chars += len(block.text)
         
-        # 粗略估算：每4个字符约等于1个token
         return max(1, total_chars // 4)
     
     def _estimate_token_count(self, text: str) -> int:
         """估算文本的token数量"""
-        return max(1, len(text.split()) // 0.75)  # 粗略估算
+        return max(1, len(text.split()) // 0.75)
     
     def _create_content_block_stop(self) -> str:
         """创建 content_block_stop 事件"""
@@ -457,13 +457,11 @@ class ToolConverter:
         
         for tool in tools:
             try:
-                # 确保schema格式正确
                 schema = tool.input_schema
                 if not isinstance(schema, dict):
                     logger.warning(f"Invalid schema for tool {tool.name}, skipping")
                     continue
                 
-                # 处理schema中的required字段
                 if 'required' not in schema and 'properties' in schema:
                     schema['required'] = []
                 
