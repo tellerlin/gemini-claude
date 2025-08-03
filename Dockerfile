@@ -1,4 +1,4 @@
-# [cite_start]Use multi-stage builds to optimize the final image size [cite: 6]
+# Use multi-stage builds to optimize the final image size
 FROM python:3.11-slim as builder
 
 # Set build arguments
@@ -14,8 +14,7 @@ WORKDIR /app
 
 # Copy requirements file
 COPY requirements.txt .
-
-# Install Python dependencies. [cite_start]When run as root, --user installs to /root/.local [cite: 7]
+# Install Python dependencies. When run as root, --user installs to /root/.local
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # --- Production Stage ---
@@ -24,14 +23,15 @@ FROM python:3.11-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-# Add the user's local bin to the PATH. [cite_start]This is where pip installs executables. [cite: 8]
+# Add the user's local bin to the PATH.
+# This is where pip installs executables.
 ENV PATH="/home/appuser/.local/bin:$PATH"
 
 # Create a non-root user to run the application
 RUN useradd --create-home --shell /bin/bash appuser
 
 # Copy the installed packages from the builder stage
-# [cite_start]The source path is /root/.local because the previous stage ran as root. [cite: 9]
+# The source path is /root/.local because the previous stage ran as root.
 COPY --from=builder /root/.local /home/appuser/.local
 
 # Set the working directory
@@ -54,10 +54,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10).read()" || exit 1
 
-# --- MODIFIED: The command now correctly points to the app object in main.py ---
 # Use Gunicorn with Uvicorn workers, and read the number of workers from the
-# [cite_start]SERVICE_WORKERS environment variable, defaulting to 1 if not set. [cite: 11]
-# CMD gunicorn main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
-
-# NEW, MORE PRECISE COMMAND FOR DEBUGGING
-CMD ["python", "-c", "import main; print(main.app)"]
+# SERVICE_WORKERS environment variable, defaulting to 1 if not set.
+CMD ["gunicorn", "main:app", "-w", "${SERVICE_WORKERS:-1}", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000"]

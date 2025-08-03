@@ -566,7 +566,13 @@ async def lifespan(app: FastAPI):
     try:
         app.state.start_time = time.time()
         app_config = get_config()
-        performance.initialize_performance_modules(app_config)
+        
+        performance.initialize_performance_modules(
+            cache_enabled=app_config.CACHE_ENABLED,
+            cache_max_size=app_config.CACHE_MAX_SIZE,
+            cache_ttl=app_config.CACHE_TTL,
+            cache_key_prefix=app_config.CACHE_KEY_PREFIX
+        )
         security_config = SecurityConfig(app_config)
         
         working_dir = os.getenv("CLAUDE_CODE_WORKING_DIR", ".")

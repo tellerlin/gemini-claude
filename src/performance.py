@@ -12,20 +12,14 @@ import logging
 from contextlib import asynccontextmanager
 from collections import deque, defaultdict
 
-# --- MODIFIED: Import adjusted for flat structure ---
-from config import AppConfig
-
 logger = logging.getLogger(__name__)
 
 class ResponseCache:
-    """Intelligent response caching system with two-tier strategy"""
-
-    def __init__(self, config: AppConfig):
-        self.enabled = config.CACHE_ENABLED
-        self.max_size = config.CACHE_MAX_SIZE
-        self.ttl = config.CACHE_TTL
-        self.key_prefix = config.CACHE_KEY_PREFIX
-        
+    def __init__(self, enabled: bool, max_size: int, ttl: int, key_prefix: str):
+        self.enabled = enabled
+        self.max_size = max_size
+        self.ttl = ttl
+        self.key_prefix = key_prefix
         self.cache = TTLCache(maxsize=self.max_size, ttl=self.ttl)
         self.frequent_cache = TTLCache(maxsize=self.max_size // 4, ttl=self.ttl * 2)
         self.hit_count = 0
@@ -255,12 +249,14 @@ response_cache: Optional[ResponseCache] = None
 performance_monitor: PerformanceMonitor = PerformanceMonitor()
 batch_processor: BatchProcessor = BatchProcessor()
 
-def initialize_performance_modules(config: AppConfig):
-    """
-    Initializes performance-related modules after config is loaded.
-    """
+def initialize_performance_modules(cache_enabled: bool, cache_max_size: int, cache_ttl: int, cache_key_prefix: str):
     global response_cache
-    response_cache = ResponseCache(config)
+    response_cache = ResponseCache(
+        enabled=cache_enabled,
+        max_size=cache_max_size,
+        ttl=cache_ttl,
+        key_prefix=cache_key_prefix
+    )
     logger.info("Performance modules initialized.")
 
 @asynccontextmanager
