@@ -63,11 +63,44 @@ class APIKeyInfo:
 
 
 class ChatRequest(BaseModel):
+    """
+    针对编程和代码生成进行优化的请求模型。
+    """
     messages: List[Dict[str, str]]
+    
     model: str = "gemini-2.5-pro"
-    temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0)
-    max_tokens: Optional[int] = Field(None, ge=1, le=8192)
-    stream: bool = False
+    
+    temperature: Optional[float] = Field(
+        default=0.1, 
+        ge=0.0, 
+        le=2.0,
+        description="控制生成内容的随机性。对于编程，推荐使用较低的值（如 0.0-0.2）以获得更精确、可预测的代码输出。"
+    )
+
+    top_p: Optional[float] = Field(
+        default=0.95,
+        ge=0.0,
+        le=1.0,
+        description="控制词元选择的多样性。与 temperature 共同作用，通常保持默认值即可。"
+    )
+    
+    max_tokens: Optional[int] = Field(
+        default=None, 
+        ge=1,
+        description="设置生成的最大词元数。对于编程任务，建议保持为 None（不设置），让模型自行决定何时结束，以确保代码的完整性。只有在需要严格限制输出长度时才设置此值。"
+    )
+
+    stop_sequences: Optional[List[str]] = Field(
+        default=None,
+        max_length=5,
+        description="一组字符串序列，当模型生成其中任何一个时，会立即停止。对代码生成非常有用，例如可以设置为 ['\\n```', '\\n}'] 来确保模型在生成代码块后停止。"
+    )
+
+    stream: bool = Field(
+        default=False,
+        description="是否以流式传输的方式返回响应。"
+    )
+
 
     @field_validator('messages')
     @classmethod
