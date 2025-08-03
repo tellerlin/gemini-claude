@@ -98,85 +98,35 @@ class AppConfig(BaseSettings):
     
     model_config = SettingsConfigDict(
         env_file=".env",
-        # 移除了 env_nested_delimiter，直接映射环境变量
         case_sensitive=False,
-        extra="ignore"  # Ignore extra fields to prevent parsing errors
+        extra="ignore"
     )
     
-    # =============================================
-    # Field Validators
-    # =============================================
-    @field_validator('SECURITY_ADAPTER_API_KEYS', mode='before')
+    @field_validator('SECURITY_ADAPTER_API_KEYS', 'SECURITY_ADMIN_API_KEYS', 'GEMINI_API_KEYS', mode='before')
     @classmethod
-    def validate_adapter_keys(cls, v):
-        """Validate and clean adapter API keys"""
+    def validate_str_to_list(cls, v):
+        """Validate and clean comma-separated strings into lists."""
         if v is None:
             return []
         if isinstance(v, str):
             if not v.strip():
                 return []
-            v = [key.strip() for key in v.split(',') if key.strip()]
+            return [key.strip() for key in v.split(',') if key.strip()]
         elif isinstance(v, list):
-            v = [str(key).strip() for key in v if str(key).strip()]
-        return [key.strip() for key in v if key.strip()]
-    
-    @field_validator('SECURITY_ADMIN_API_KEYS', mode='before')
-    @classmethod
-    def validate_admin_keys(cls, v):
-        """Validate and clean admin API keys"""
-        if v is None:
-            return []
-        if isinstance(v, str):
-            if not v.strip():
-                return []
-            v = [key.strip() for key in v.split(',') if key.strip()]
-        elif isinstance(v, list):
-            v = [str(key).strip() for key in v if str(key).strip()]
-        return [key.strip() for key in v if key.strip()]
+            return [str(key).strip() for key in v if str(key).strip()]
+        return v
 
-    @field_validator('GEMINI_API_KEYS', mode='before')
-    @classmethod
-    def validate_gemini_api_keys(cls, v):
-        """Validate and clean Gemini API keys"""
-        if v is None:
-            return []
-        
-        if isinstance(v, str):
-            if not v.strip():
-                return []
-            v = [key.strip() for key in v.split(',') if key.strip()]
-        elif isinstance(v, list):
-            v = [str(key).strip() for key in v if str(key).strip()]
-        
-        valid_keys = []
-        for key in v:
-            if key and str(key).strip():
-                cleaned_key = str(key).strip().strip('"\'').strip()
-                if cleaned_key:
-                    valid_keys.append(cleaned_key)
-        
-        if valid_keys:
-            invalid_keys = [key for key in valid_keys if not key.startswith('AIza')]
-            if invalid_keys:
-                logger.warning(f"Potentially invalid API keys detected: {len(invalid_keys)} keys don't start with 'AIza'")
-        
-        return valid_keys
-
+    # [MODIFIED] This validator now correctly handles comma-separated strings for CORS origins.
     @field_validator('SERVICE_CORS_ORIGINS', mode='before')
     @classmethod
     def validate_cors_origins(cls, v):
-        """Validate CORS origins"""
-        if v is None:
-            return ["*"]
+        """Validate CORS origins from a comma-separated string."""
         if isinstance(v, str):
-            if not v.strip():
+            if v.strip() == "*":
                 return ["*"]
             return [origin.strip() for origin in v.split(',') if origin.strip()]
         return v
 
-    # =============================================
-    # Post-init Validation
-    # =============================================
     def model_post_init(self, __context):
         """Post-initialization validation and setup"""
         self._validate_config()
@@ -197,54 +147,7 @@ class AppConfig(BaseSettings):
             raise ValueError("Max connections must be positive")
         
         logger.info(f"Configuration validated for {self.SERVICE_ENVIRONMENT.value} environment")
-    
-    # =============================================
-    # Helper Methods (for backward compatibility)
-    # =============================================
-    def get_security_status(self) -> Dict[str, Any]:
-        """Get security configuration status"""
-        return {
-            "security_enabled": bool(self.SECURITY_ADAPTER_API_KEYS),
-            "admin_keys_configured": bool(self.SECURITY_ADMIN_API_KEYS),
-            "ip_blocking_enabled": self.SECURITY_ENABLE_IP_BLOCKING,
-            "rate_limiting_enabled": self.SECURITY_ENABLE_RATE_LIMITING,
-            "environment": self.SERVICE_ENVIRONMENT.value
-        }
-    
-    def get_cache_config_dict(self) -> Dict[str, Any]:
-        """Get cache configuration as dictionary"""
-        return {
-            "enabled": self.CACHE_ENABLED,
-            "max_size": self.CACHE_MAX_SIZE,
-            "ttl": self.CACHE_TTL,
-            "key_prefix": self.CACHE_KEY_PREFIX
-        }
-    
-    def get_performance_config_dict(self) -> Dict[str, Any]:
-        """Get performance configuration as dictionary"""
-        return {
-            "max_keepalive_connections": self.PERFORMANCE_MAX_KEEPALIVE_CONNECTIONS,
-            "max_connections": self.PERFORMANCE_MAX_CONNECTIONS,
-            "keepalive_expiry": self.PERFORMANCE_KEEPALIVE_EXPIRY,
-            "connect_timeout": self.PERFORMANCE_CONNECT_TIMEOUT,
-            "read_timeout": self.PERFORMANCE_READ_TIMEOUT,
-            "write_timeout": self.PERFORMANCE_WRITE_TIMEOUT,
-            "pool_timeout": self.PERFORMANCE_POOL_TIMEOUT,
-            "http2_enabled": self.PERFORMANCE_HTTP2_ENABLED
-        }
-    
-    def get_gemini_config_dict(self) -> Dict[str, Any]:
-        """Get Gemini configuration as dictionary"""
-        return {
-            "api_keys": self.GEMINI_API_KEYS,
-            "proxy_url": self.GEMINI_PROXY_URL,
-            "max_failures": self.GEMINI_MAX_FAILURES,
-            "cooling_period": self.GEMINI_COOLING_PERIOD,
-            "health_check_interval": self.GEMINI_HEALTH_CHECK_INTERVAL,
-            "request_timeout": self.GEMINI_REQUEST_TIMEOUT,
-            "max_retries": self.GEMINI_MAX_RETRIES
-        }
-    
+
     def log_configuration(self):
         """Log current configuration (without sensitive data)"""
         logger.info("=== Application Configuration ===")
@@ -259,9 +162,6 @@ class AppConfig(BaseSettings):
         logger.info(f"Metrics: {'Enabled' if self.SERVICE_ENABLE_METRICS else 'Disabled'}")
         logger.info("=================================")
 
-# =============================================
-# Global Configuration Management
-# =============================================
 _config: Optional[AppConfig] = None
 
 def load_configuration() -> AppConfig:
@@ -272,7 +172,8 @@ def load_configuration() -> AppConfig:
         _config.log_configuration()
         return _config
     except Exception as e:
-        logger.error(f"Failed to load configuration: {e}")
+        # Use a basic print here as the logger might not be configured yet.
+        print(f"Failed to load configuration: {e}")
         raise
 
 def get_config() -> AppConfig:
