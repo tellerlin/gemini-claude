@@ -3,7 +3,7 @@ Enhanced configuration management for Gemini Claude Adapter - Flat Structure
 """
 
 import os
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from enum import Enum
@@ -41,12 +41,14 @@ class AppConfig(BaseSettings):
     SERVICE_LOG_LEVEL: LogLevel = Field(LogLevel.INFO, description="Log level")
     SERVICE_ENABLE_METRICS: bool = Field(True, description="Enable metrics collection")
     SERVICE_ENABLE_HEALTH_CHECK: bool = Field(True, description="Enable health check endpoint")
-    SERVICE_CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["*"], description="CORS allowed origins")
+    
+    # 关键修复：将类型改为 Union[str, List[str]]，让 Pydantic 接受字符串输入
+    SERVICE_CORS_ORIGINS: Union[str, List[str]] = Field(default="*", description="CORS allowed origins")
     
     # =============================================
     # Gemini API Configuration - [REQUIRED]
     # =============================================
-    GEMINI_API_KEYS: List[str] = Field(default_factory=list, description="Gemini API keys")
+    GEMINI_API_KEYS: Union[str, List[str]] = Field(default="", description="Gemini API keys")
     GEMINI_PROXY_URL: Optional[str] = Field(None, description="Proxy URL for API calls")
     GEMINI_MAX_FAILURES: int = Field(3, description="Maximum failures before cooling", ge=1)
     GEMINI_COOLING_PERIOD: int = Field(300, description="Cooling period in seconds", ge=60)
@@ -57,8 +59,8 @@ class AppConfig(BaseSettings):
     # =============================================
     # Security Configuration - [REQUIRED]
     # =============================================
-    SECURITY_ADAPTER_API_KEYS: List[str] = Field(default_factory=list, description="Client API keys")
-    SECURITY_ADMIN_API_KEYS: List[str] = Field(default_factory=list, description="Admin API keys")
+    SECURITY_ADAPTER_API_KEYS: Union[str, List[str]] = Field(default="", description="Client API keys")
+    SECURITY_ADMIN_API_KEYS: Union[str, List[str]] = Field(default="", description="Admin API keys")
     SECURITY_ENABLE_IP_BLOCKING: bool = Field(True, description="Enable IP blocking")
     SECURITY_MAX_FAILED_ATTEMPTS: int = Field(5, description="Maximum failed attempts before blocking")
     SECURITY_BLOCK_DURATION: int = Field(300, description="IP block duration in seconds")
@@ -106,7 +108,7 @@ class AppConfig(BaseSettings):
     @classmethod
     def validate_str_to_list(cls, v):
         """Validate and clean comma-separated strings into lists."""
-        if v is None:
+        if v is None or v == "":
             return []
         if isinstance(v, str):
             if not v.strip():
@@ -120,16 +122,33 @@ class AppConfig(BaseSettings):
     @classmethod
     def validate_cors_origins(cls, v):
         """Validate CORS origins from a comma-separated string."""
-        if v is None:
+        if v is None or v == "":
             return ["*"]
         if isinstance(v, str):
             if not v.strip():
                 return ["*"]
+            # 如果是单个 * 或者逗号分隔的字符串，转换为列表
             return [origin.strip() for origin in v.split(',') if origin.strip()]
-        return v
+        elif isinstance(v, list):
+            return v
+        return ["*"]
 
     def model_post_init(self, __context):
         """Post-initialization validation and setup"""
+        
+        # 确保所有需要列表的字段都是列表类型
+        if isinstance(self.SERVICE_CORS_ORIGINS, str):
+            self.SERVICE_CORS_ORIGINS = [origin.strip() for origin in self.SERVICE_CORS_ORIGINS.split(',') if origin.strip()]
+        
+        if isinstance(self.GEMINI_API_KEYS, str):
+            self.GEMINI_API_KEYS = [key.strip() for key in self.GEMINI_API_KEYS.split(',') if key.strip()]
+            
+        if isinstance(self.SECURITY_ADAPTER_API_KEYS, str):
+            self.SECURITY_ADAPTER_API_KEYS = [key.strip() for key in self.SECURITY_ADAPTER_API_KEYS.split(',') if key.strip()]
+            
+        if isinstance(self.SECURITY_ADMIN_API_KEYS, str):
+            self.SECURITY_ADMIN_API_KEYS = [key.strip() for key in self.SECURITY_ADMIN_API_KEYS.split(',') if key.strip()]
+        
         self._validate_config()
     
     def _validate_config(self):
@@ -159,6 +178,7 @@ class AppConfig(BaseSettings):
         logger.info(f"Security Enabled: {bool(self.SECURITY_ADAPTER_API_KEYS)}")
         logger.info(f"Admin Keys: {len(self.SECURITY_ADMIN_API_KEYS)} configured")
         logger.info(f"Gemini Keys: {len(self.GEMINI_API_KEYS)} configured")
+        logger.info(f"CORS Origins: {self.SERVICE_CORS_ORIGINS}")
         logger.info(f"Caching: {'Enabled' if self.CACHE_ENABLED else 'Disabled'}")
         logger.info(f"Metrics: {'Enabled' if self.SERVICE_ENABLE_METRICS else 'Disabled'}")
         logger.info("=================================")
