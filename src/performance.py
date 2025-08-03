@@ -280,7 +280,11 @@ async def monitor_performance(endpoint: str):
 
 def get_performance_stats() -> Dict[str, Any]:
     """Get comprehensive performance statistics"""
+    
+    # Check if the cache is initialized before trying to access it.
+    cache_stats = response_cache.get_stats() if response_cache else {}
+
     return {
-        "cache_stats": response_cache.get_stats(),
+        "cache_stats": cache_stats,
         "performance_stats": performance_monitor.get_performance_stats()
     }
