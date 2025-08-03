@@ -20,6 +20,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from collections import defaultdict, deque
 import hashlib
 
+# --- MODIFIED: Added AnthropicAPIConfig to imports ---
 try:
     from .config import get_config, AppConfig
     from .error_handling import error_monitor, monitor_errors, ErrorClassifier
@@ -28,7 +29,8 @@ try:
     from .anthropic_api import (
         MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
         AnthropicToGeminiConverter, GeminiToAnthropicConverter,
-        StreamingResponseGenerator, ToolConverter, log_request_beautifully
+        StreamingResponseGenerator, ToolConverter, log_request_beautifully,
+        AnthropicAPIConfig
     )
 except ImportError:
     from config import get_config, AppConfig
@@ -38,7 +40,8 @@ except ImportError:
     from anthropic_api import (
         MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
         AnthropicToGeminiConverter, GeminiToAnthropicConverter,
-        StreamingResponseGenerator, ToolConverter, log_request_beautifully
+        StreamingResponseGenerator, ToolConverter, log_request_beautifully,
+        AnthropicAPIConfig
     )
 
 
@@ -68,7 +71,7 @@ class ChatRequest(BaseModel):
     """
     messages: List[Dict[str, str]]
     
-    model: str = "gemini-2.5-pro"
+    model: str = "gemini-1.5-pro-latest" # Changed default to a more recent model
     
     temperature: Optional[float] = Field(
         default=0.1, 
@@ -133,6 +136,7 @@ class SecurityConfig:
             logger.info("No admin keys configured - client keys will have admin access")
 
 security_config: Optional[SecurityConfig] = None
+api_config: Optional[AnthropicAPIConfig] = None # --- MODIFIED: Added global api_config
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -145,12 +149,12 @@ async def verify_api_key(
         logger.debug("Security disabled, allowing access")
         return "insecure_mode"
 
-    if api_key and api_key in security_config.valid_api_keys:
-        return api_key
-    if bearer_token and bearer_token.credentials in security_config.valid_api_keys:
-        return bearer_token.credentials
+    key_to_check = api_key or (bearer_token.credentials if bearer_token else None)
+    
+    if key_to_check and key_to_check in security_config.valid_api_keys:
+        return key_to_check
 
-    if not api_key and not bearer_token:
+    if not key_to_check:
         raise HTTPException(
             status_code=HTTP_401_UNAUTHORIZED,
             detail="API key required. Use X-API-Key header or Authorization: Bearer <key>",
@@ -163,15 +167,16 @@ async def verify_admin_key(
     api_key: Optional[str] = Depends(api_key_header),
     bearer_token: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)
 ) -> str:
+    # If no admin keys are configured, any valid client key is considered an admin
     if not security_config.admin_keys:
         return await verify_api_key(api_key, bearer_token)
 
-    if api_key and api_key in security_config.admin_keys:
-        return api_key
-    if bearer_token and bearer_token.credentials in security_config.admin_keys:
-        return bearer_token.credentials
+    key_to_check = api_key or (bearer_token.credentials if bearer_token else None)
+    
+    if key_to_check and key_to_check in security_config.admin_keys:
+        return key_to_check
 
-    if not api_key and not bearer_token:
+    if not key_to_check:
         raise HTTPException(
             status_code=HTTP_401_UNAUTHORIZED,
             detail="Admin API key required",
@@ -251,7 +256,7 @@ class GeminiKeyManager:
         status_code = 0
         status_patterns = [r'status code (\d{3})', r'HTTP (\d{3})', r'Error (\d{3})', r'(\d{3})']
         for pattern in status_patterns:
-            match = re.search(pattern, error)
+            match = re.search(pattern, error_lower)
             if match:
                 status_code = int(match.group(1))
                 break
@@ -260,10 +265,9 @@ class GeminiKeyManager:
             'account suspended', 'account terminated', 'unauthorized', 'authentication failed',
             'access denied', 'billing disabled', 'payment required', 'payment failed',
             'quota exceeded permanently', 'api key revoked', 'project not found',
-            'project deleted', 'service disabled', 'forbidden', 'permission denied'
+            'project deleted', 'service disabled', 'permission denied'
         ]
-        permanent_status_codes = [401, 402, 403, 404]
-        if any(pattern in error_lower for pattern in permanent_patterns) or status_code in permanent_status_codes:
+        if any(pattern in error_lower for pattern in permanent_patterns) or status_code in [401, 402, 403, 404]:
             return 'PERMANENT', -1
         extended_patterns = [
             'quota', 'rate limit', 'rate_limit', 'too many requests', 'resource exhausted',
@@ -289,7 +293,7 @@ class GeminiKeyManager:
             response_score = 1.0 / (1.0 + avg_response_time)
             recent_use_penalty = 0.9 if key_info.key == self.last_key_used else 1.0
             return (success_rate * 0.6 + response_score * 0.3) * recent_use_penalty
-        return max(active_keys, key=key_score)
+        return max(active_keys, key=key_score, default=random.choice(active_keys))
 
     async def record_key_performance(self, key: str, response_time: float, success: bool):
         async with self.lock:
@@ -306,8 +310,9 @@ class GeminiKeyManager:
                 return
             key_info.failure_count = 0
             key_info.last_success_time = time.time()
-            key_info.successful_requests += 1
-            key_info.total_requests += 1
+            if key_info.status == KeyStatus.ACTIVE:
+                key_info.successful_requests += 1
+                key_info.total_requests += 1
 
     async def get_stats(self) -> Dict[str, Any]:
         async with self.lock:
@@ -349,7 +354,7 @@ class GeminiKeyManager:
             key_info.cooling_until = None
             key_info.last_failure_time = None
             self.key_cycle = None
-            logger.info(f"Reset API key {matched_key[:8]}... from {old_status.value} to active status")
+            logger.info(f"Admin reset API key {matched_key[:8]}... from {old_status.value} to active status")
             return {"message": f"Successfully reset key {matched_key[:8]}... from {old_status.value} to active"}
 
     async def attempt_key_recovery(self, key_prefix: str) -> Dict[str, Any]:
@@ -371,16 +376,20 @@ class GeminiKeyManager:
             key_info.cooling_until = None
             key_info.last_failure_time = None
             self.key_cycle = None
-            logger.info(f"Recovered API key {matched_key[:8]}... from {old_status.value} to active status")
+            logger.info(f"Admin recovered API key {matched_key[:8]}... from {old_status.value} to active status")
             return {"message": f"Successfully recovered key {matched_key[:8]}... from {old_status.value} to active"}
 
 class LiteLLMAdapter:
-    def __init__(self, config: AppConfig, key_manager: GeminiKeyManager):
+    # --- MODIFIED: __init__ to accept api_config ---
+    def __init__(self, config: AppConfig, key_manager: GeminiKeyManager, api_config: AnthropicAPIConfig):
         self.config = config
         self.key_manager = key_manager
-        self.anthropic_to_gemini = AnthropicToGeminiConverter()
-        self.gemini_to_anthropic = GeminiToAnthropicConverter()
-        self.tool_converter = ToolConverter()
+        # --- MODIFIED: Use components from the passed config ---
+        self.anthropic_to_gemini = api_config.anthropic_to_gemini
+        self.gemini_to_anthropic = api_config.gemini_to_anthropic
+        self.tool_converter = api_config.tool_converter
+        self.claude_code_simulator = api_config.claude_code_simulator
+        
         self._request_deduplicator: Dict[str, asyncio.Future] = {}
         self._dedup_lock = asyncio.Lock()
         if config.GEMINI_PROXY_URL:
@@ -398,10 +407,12 @@ class LiteLLMAdapter:
         request_hash = hashlib.md5(json.dumps({
             "model": request.model, "messages": request.messages,
             "temperature": request.temperature, "stream": request.stream
-        }, sort_keys=True).encode()).hexdigest()
+        }, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+        
         if not request.stream:
             async with self._dedup_lock:
                 if request_hash in self._request_deduplicator:
+                    logger.debug(f"Request de-duplication hit for hash: {request_hash}")
                     return await self._request_deduplicator[request_hash]
                 future = asyncio.Future()
                 self._request_deduplicator[request_hash] = future
@@ -423,19 +434,23 @@ class LiteLLMAdapter:
                         del self._request_deduplicator[request_hash]
 
     async def _execute_chat_completion(self, request: ChatRequest) -> Union[Dict, Any]:
-        last_error = None
+        last_error = "No active keys to attempt request."
         attempted_keys = set()
+        
         cache_key = None
-        if not request.stream:
+        if not request.stream and self.config.CACHE_ENABLED:
             cache_key = {
                 "model": request.model, "messages": request.messages,
                 "temperature": request.temperature, "max_tokens": request.max_tokens
             }
             cached_response = await performance.response_cache.get(cache_key)
             if cached_response:
+                logger.debug("Cache hit for chat completion request.")
                 return cached_response
+        
         max_concurrent = min(3, len(self.key_manager.keys))
         semaphore = asyncio.Semaphore(max_concurrent)
+        
         async def try_key_request(key_info: APIKeyInfo):
             async with semaphore:
                 if key_info.key in attempted_keys:
@@ -443,8 +458,6 @@ class LiteLLMAdapter:
                 attempted_keys.add(key_info.key)
                 start_time = time.time()
                 try:
-                    async with self.key_manager.lock:
-                        key_info.total_requests += 1
                     kwargs = {
                         "model": f"gemini/{request.model}", "messages": request.messages,
                         "api_key": key_info.key, "temperature": request.temperature,
@@ -452,8 +465,11 @@ class LiteLLMAdapter:
                     }
                     if request.max_tokens:
                         kwargs["max_tokens"] = request.max_tokens
+                    if request.stop_sequences:
+                        kwargs["stop"] = request.stop_sequences
+
                     response = await asyncio.wait_for(
-                        litellm.acompletion(**kwargs), timeout=self.config.GEMINI_REQUEST_TIMEOUT + 5.0
+                        litellm.acompletion(**kwargs), timeout=self.config.GEMINI_REQUEST_TIMEOUT
                     )
                     response_time = time.time() - start_time
                     await self.key_manager.mark_key_success(key_info.key)
@@ -464,50 +480,66 @@ class LiteLLMAdapter:
                     await self.key_manager.mark_key_failed(key_info.key, str(e))
                     await self.key_manager.record_key_performance(key_info.key, response_time, False)
                     raise e
+        
         active_keys = [k for k in self.key_manager.keys.values() if k.status == KeyStatus.ACTIVE]
         if not active_keys:
-            raise HTTPException(status_code=502, detail="No available API keys")
-        keys_to_try = active_keys[:max_concurrent]
+            raise HTTPException(status_code=503, detail="No available API keys")
+        
+        keys_to_try = sorted(active_keys, key=lambda k: self._select_best_key([k]), reverse=True)[:max_concurrent]
+        
         try:
-            # === FINAL FIX: Use asyncio.create_task for robust concurrency ===
             tasks = [asyncio.create_task(try_key_request(key_info)) for key_info in keys_to_try]
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            
             for task in pending:
                 task.cancel()
+                
             for task in done:
                 try:
-                    result = await task
+                    result = task.result()
                     if result:
-                        if not request.stream and cache_key:
-                            await performance.response_cache.set(cache_key, result)
+                        if not request.stream and cache_key and self.config.CACHE_ENABLED:
+                            # Assuming result is serializable
+                            await performance.response_cache.set(cache_key, result.model_dump() if hasattr(result, 'model_dump') else result)
                         return result
                 except Exception as e:
                     last_error = str(e)
                     continue
         except Exception as e:
             last_error = str(e)
-        raise HTTPException(status_code=502, detail=f"All available keys failed. Last error: {last_error}")
+            
+        raise HTTPException(status_code=502, detail=f"All attempted keys failed. Last error: {last_error}")
 
+    # --- MODIFIED: This method is now fully async and uses the enhanced converters ---
     async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
         gemini_request_dict = self.anthropic_to_gemini.convert_request(request)
+        
         if request.tools:
             gemini_tools = self.tool_converter.convert_tools_to_gemini(request.tools)
             gemini_request_dict["tools"] = gemini_tools
             if request.tool_choice:
                 tool_config = self.tool_converter.convert_tool_choice_to_gemini(request.tool_choice)
                 gemini_request_dict["tool_config"] = {"function_calling_config": {"mode": tool_config}}
+        
+        # We need to construct a ChatRequest Pydantic model to pass to our internal chat_completion method
         chat_request = ChatRequest(
-            messages=gemini_request_dict["messages"], model=gemini_request_dict["model"].replace("gemini/", ""),
-            temperature=gemini_request_dict["temperature"], max_tokens=gemini_request_dict.get("max_tokens"),
+            messages=gemini_request_dict["messages"],
+            model=gemini_request_dict["model"].replace("gemini/", ""),
+            temperature=gemini_request_dict.get("temperature"),
+            max_tokens=gemini_request_dict.get("max_tokens"),
             stream=gemini_request_dict["stream"]
         )
+        
         if request.stream:
             gemini_stream = await self.chat_completion(chat_request)
-            streaming_generator = StreamingResponseGenerator(request)
+            # MODIFIED: Instantiate generator with the shared simulator instance
+            streaming_generator = StreamingResponseGenerator(request, self.claude_code_simulator)
             return streaming_generator.generate_sse_events(gemini_stream)
         else:
-            gemini_response = await self.chat_completion(chat_request)
-            return self.gemini_to_anthropic.convert_response(gemini_response, request)
+            gemini_response_model = await self.chat_completion(chat_request)
+            gemini_response_dict = gemini_response_model.model_dump() if hasattr(gemini_response_model, 'model_dump') else gemini_response_model
+            # MODIFIED: Await the async conversion method
+            return await self.gemini_to_anthropic.convert_response(gemini_response_dict, request)
 
 key_manager: Optional[GeminiKeyManager] = None
 adapter: Optional[LiteLLMAdapter] = None
@@ -536,8 +568,9 @@ class RateLimiter:
 rate_limiter = RateLimiter(max_requests=100, window_seconds=60)
 
 async def check_rate_limit(client_key: str = Depends(verify_api_key)):
-    if not await rate_limiter.is_allowed(client_key):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please try again later.", headers={"Retry-After": "60"})
+    if security_config and security_config.enable_rate_limiting:
+        if not await rate_limiter.is_allowed(client_key):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded. Please try again later.", headers={"Retry-After": "60"})
     return client_key
 
 async def optimized_health_check_task():
@@ -558,7 +591,9 @@ async def optimized_health_check_task():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global key_manager, adapter, security_config
+    # --- MODIFIED: Added api_config to global ---
+    global key_manager, adapter, security_config, api_config
+    
     os.makedirs("logs", exist_ok=True)
     logger.add(
         "logs/gemini_adapter_{time}.log", rotation="1 day", retention="7 days",
@@ -570,10 +605,18 @@ async def lifespan(app: FastAPI):
         app_config = get_config()
         initialize_performance_modules(app_config)
         security_config = SecurityConfig(app_config)
+        
+        # --- MODIFIED: Initialize AnthropicAPIConfig for Claude Code support ---
+        working_dir = os.getenv("CLAUDE_CODE_WORKING_DIR", ".")
+        api_config = AnthropicAPIConfig(working_directory=working_dir)
+        logger.info(f"Claude Code support enabled. Working directory: {api_config.working_directory}")
+        
         key_manager = GeminiKeyManager(app_config)
-        adapter = LiteLLMAdapter(app_config, key_manager)
+        # --- MODIFIED: Pass api_config to the adapter ---
+        adapter = LiteLLMAdapter(app_config, key_manager, api_config)
+        
         health_task = asyncio.create_task(optimized_health_check_task())
-        logger.info("Gemini Claude Adapter v2.1.0 started successfully with optimizations.")
+        logger.info("Gemini Claude Adapter v2.1.0 (Claude Code Enabled) started successfully.")
         logger.info(f"Environment: {app_config.SERVICE_ENVIRONMENT.value}")
         logger.info(f"Caching: {'Enabled' if app_config.CACHE_ENABLED else 'Disabled'}")
         logger.info(f"Performance monitoring: {'Enabled' if app_config.SERVICE_ENABLE_METRICS else 'Disabled'}")
@@ -583,8 +626,7 @@ async def lifespan(app: FastAPI):
             logger.warning("API key authentication is DISABLED - service is unsecured!")
         yield
     except Exception as e:
-        logger.error(f"Failed to start application: {e}")
-        logger.exception(e)
+        logger.critical(f"Failed to start application: {e}", exc_info=True)
         raise
     finally:
         if 'health_task' in locals() and not health_task.done():
@@ -596,9 +638,9 @@ async def lifespan(app: FastAPI):
         logger.info("Gemini Claude Adapter shutting down.")
 
 app = FastAPI(
-    title="Gemini Claude Adapter v2.1.0",
-    description="A high-performance, secure Gemini adapter with complete Anthropic API compatibility.",
-    version="2.1.0",
+    title="Gemini Claude Adapter v2.1.0 (Claude Code Enabled)",
+    description="A high-performance, secure Gemini adapter with complete Anthropic API compatibility and Claude Code support.",
+    version="2.1.0-claude",
     lifespan=lifespan
 )
 
@@ -606,10 +648,10 @@ async def stream_generator(response_stream):
     try:
         async for chunk in response_stream:
             try:
-                if hasattr(chunk, 'dict'):
-                    chunk_data = chunk.dict()
-                elif hasattr(chunk, 'model_dump'):
+                if hasattr(chunk, 'model_dump'):
                     chunk_data = chunk.model_dump()
+                elif hasattr(chunk, 'dict'):
+                    chunk_data = chunk.dict()
                 else:
                     chunk_data = chunk
                 yield f"data: {json.dumps(chunk_data)}\n\n"
@@ -625,13 +667,15 @@ async def stream_generator(response_stream):
 @app.get("/", include_in_schema=False)
 async def root():
     return {
-        "name": "Gemini Claude Adapter", "version": "2.1.0", "status": "running",
+        "name": "Gemini Claude Adapter", "version": "2.1.0-claude", "status": "running",
         "security_enabled": security_config.security_enabled if security_config else False,
+        "claude_code_enabled": True,
+        "claude_code_workspace": api_config.working_directory if api_config else "N/A",
         "endpoints": {
             "chat": "/v1/chat/completions", "messages": "/v1/messages",
             "messages_tokens": "/v1/messages/count_tokens", "models": "/v1/models",
             "health": "/health", "stats": "/stats",
-            "admin": "/admin/reset-key/{key_prefix}, /admin/recover-key/{key_prefix}"
+            "admin": "/admin/*"
         },
         "authentication": {
             "required": security_config.security_enabled if security_config else False,
@@ -651,7 +695,7 @@ async def health_check():
             status_code=200 if is_healthy else 503,
             content={
                 "status": "healthy" if is_healthy else "degraded",
-                "timestamp": datetime.now().isoformat(), "service_version": "2.1.0",
+                "timestamp": datetime.now().isoformat(), "service_version": "2.1.0-claude",
                 "security_enabled": security_config.security_enabled, **stats
             }
         )
@@ -668,7 +712,8 @@ async def create_message(request: MessagesRequest, raw_request: Request, api_key
         gemini_model = adapter.anthropic_to_gemini.convert_model(anthropic_model)
         num_messages = len(request.messages)
         num_tools = len(request.tools) if request.tools else 0
-        logger.info(f"Anthropic Messages API request from client: {api_key[:8] if api_key != 'insecure_mode' else 'insecure_mode'}...")
+        client_id = api_key[:8] if api_key != 'insecure_mode' else 'insecure_mode'
+        logger.info(f"Anthropic Messages API request from client: {client_id}...")
         logger.info(f"Request model: {anthropic_model}, stream: {request.stream}")
         log_request_beautifully(
             method="POST", path=str(raw_request.url.path), anthropic_model=anthropic_model,
@@ -690,19 +735,20 @@ async def create_message(request: MessagesRequest, raw_request: Request, api_key
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in Anthropic Messages API: {e}")
+        logger.error(f"Unexpected error in Anthropic Messages API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.options("/v1/messages")
 async def options_messages():
-    return {"status": "ok"}
+    return JSONResponse(content={"status": "ok"}, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, Anthropic-Version"})
 
 @app.post("/v1/messages/count_tokens")
 async def count_tokens(request: TokenCountRequest, api_key: str = Depends(verify_api_key)):
     if not adapter:
         raise HTTPException(status_code=503, detail="Service not initialized")
     try:
-        logger.info(f"Token count request from client: {api_key[:8] if api_key != 'insecure_mode' else 'insecure_mode'}...")
+        client_id = api_key[:8] if api_key != 'insecure_mode' else 'insecure_mode'
+        logger.info(f"Token count request from client: {client_id}...")
         gemini_request_dict = adapter.anthropic_to_gemini.convert_request(
             MessagesRequest(
                 model=request.model, max_tokens=100, messages=request.messages,
@@ -714,7 +760,7 @@ async def count_tokens(request: TokenCountRequest, api_key: str = Depends(verify
             token_count = token_counter(model=gemini_request_dict["model"], messages=gemini_request_dict["messages"])
             return TokenCountResponse(input_tokens=token_count)
         except ImportError:
-            logger.error("Could not import token_counter from litellm")
+            logger.error("Could not import token_counter from litellm. Using estimation.")
             text_content = ""
             for msg in gemini_request_dict["messages"]:
                 if isinstance(msg.get("content"), str):
@@ -730,28 +776,23 @@ async def chat_completions(request: ChatRequest, api_key: str = Depends(verify_a
     if not adapter:
         raise HTTPException(status_code=503, detail="Service not initialized")
     try:
-        logger.info(f"Legacy chat completion request from client: {api_key[:8] if api_key != 'insecure_mode' else 'insecure_mode'}...")
+        client_id = api_key[:8] if api_key != 'insecure_mode' else 'insecure_mode'
+        logger.info(f"Legacy chat completion request from client: {client_id}...")
         response = await adapter.chat_completion(request)
         if request.stream:
             return StreamingResponse(
                 stream_generator(response), media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache", "Connection": "keep-alive", "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
                 }
             )
         else:
-            return response
+            return response.model_dump()
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in chat completion: {e}")
+        logger.error(f"Unexpected error in chat completion: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
-
-@app.options("/v1/chat/completions")
-async def options_chat_completions():
-    return {"status": "ok"}
 
 @app.get("/stats")
 async def get_stats_endpoint(api_key: str = Depends(verify_api_key)):
@@ -769,7 +810,6 @@ async def get_models(api_key: str = Depends(verify_api_key)):
         "object": "list",
         "data": [
             {"id": "claude-3-5-sonnet", "object": "model", "created": int(time.time()), "owned_by": "anthropic"},
-            {"id": "claude-3-5-haiku", "object": "model", "created": int(time.time()), "owned_by": "anthropic"},
             {"id": "claude-3-opus", "object": "model", "created": int(time.time()), "owned_by": "anthropic"},
             {"id": "claude-3-sonnet", "object": "model", "created": int(time.time()), "owned_by": "anthropic"},
             {"id": "claude-3-haiku", "object": "model", "created": int(time.time()), "owned_by": "anthropic"}
@@ -777,7 +817,7 @@ async def get_models(api_key: str = Depends(verify_api_key)):
     }
 
 @app.post("/admin/reset-key/{key_prefix}")
-async def reset_key(key_prefix: str, api_key: str = Depends(verify_admin_key)):
+async def reset_key_endpoint(key_prefix: str, api_key: str = Depends(verify_admin_key)):
     if not key_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
     try:
@@ -792,7 +832,7 @@ async def reset_key(key_prefix: str, api_key: str = Depends(verify_admin_key)):
         raise HTTPException(status_code=500, detail="Key reset failed")
 
 @app.post("/admin/recover-key/{key_prefix}")
-async def recover_key(key_prefix: str, api_key: str = Depends(verify_admin_key)):
+async def recover_key_endpoint(key_prefix: str, api_key: str = Depends(verify_admin_key)):
     if not key_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
     try:
@@ -808,11 +848,10 @@ async def recover_key(key_prefix: str, api_key: str = Depends(verify_admin_key))
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {type(exc).__name__}: {str(exc)}")
-    logger.error(f"Request: {request.method} {request.url}")
+    logger.error(f"Unhandled exception for request {request.method} {request.url}: {exc}", exc_info=True)
     if isinstance(exc, HTTPException):
         return JSONResponse(status_code=exc.status_code, content={"error": {"message": exc.detail, "type": "http_exception"}})
-    return JSONResponse(status_code=500, content={"error": {"message": "Internal server error", "type": "internal_error"}})
+    return JSONResponse(status_code=500, content={"error": {"message": "An internal server error occurred.", "type": "internal_error"}})
 
 @app.get("/metrics")
 async def get_metrics(api_key: str = Depends(verify_api_key)):
@@ -842,6 +881,8 @@ async def get_metrics(api_key: str = Depends(verify_api_key)):
 @app.get("/cache/stats")
 async def get_cache_stats(api_key: str = Depends(verify_api_key)):
     try:
+        if not (performance.response_cache and performance.response_cache.enabled):
+            return {"message": "Cache is disabled."}
         return performance.response_cache.get_stats()
     except Exception as e:
         logger.error(f"Cache stats retrieval failed: {e}")
@@ -850,6 +891,8 @@ async def get_cache_stats(api_key: str = Depends(verify_api_key)):
 @app.post("/cache/clear")
 async def clear_cache(api_key: str = Depends(verify_admin_key)):
     try:
+        if not (performance.response_cache and performance.response_cache.enabled):
+            return {"message": "Cache is disabled, nothing to clear."}
         performance.response_cache.clear()
         return {"message": "Cache cleared successfully"}
     except Exception as e:
@@ -871,8 +914,8 @@ async def detailed_health_check(api_key: str = Depends(verify_api_key)):
     try:
         stats = await key_manager.get_stats()
         basic_healthy = stats["active_keys"] > 0
-        cache_stats = performance.response_cache.get_stats()
-        cache_healthy = cache_stats["hit_rate"] is not None
+        cache_stats = performance.response_cache.get_stats() if performance.response_cache else {"enabled": False}
+        cache_healthy = not cache_stats.get("enabled", True) or cache_stats.get("hit_rate") is not None
         overall_healthy = basic_healthy and cache_healthy
         return {
             "status": "healthy" if overall_healthy else "degraded",
@@ -881,7 +924,7 @@ async def detailed_health_check(api_key: str = Depends(verify_api_key)):
                 "cache": {"healthy": cache_healthy, "stats": cache_stats},
             },
             "timestamp": datetime.now().isoformat(),
-            "version": "2.1.0"
+            "version": "2.1.0-claude"
         }
     except Exception as e:
         logger.error(f"Detailed health check failed: {e}")
@@ -896,10 +939,12 @@ async def get_security_status(api_key: str = Depends(verify_admin_key)):
         "client_keys_count": len(security_config.valid_api_keys),
         "admin_keys_count": len(security_config.admin_keys),
         "has_admin_keys": bool(security_config.admin_keys),
-        "authentication_methods": ["X-API-Key header", "Authorization Bearer token"],
+        "ip_blocking_enabled": security_config.enable_ip_blocking,
+        "rate_limiting_enabled": security_config.enable_rate_limiting,
         "admin_endpoints": ["/admin/reset-key/{key_prefix}", "/admin/recover-key/{key_prefix}", "/admin/security-status"]
     }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", reload=True)
+    # Corrected run command to point to this script's app object
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info", reload=True)
