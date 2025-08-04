@@ -50,12 +50,6 @@ class APIKeyInfo:
     total_requests: int = 0
     successful_requests: int = 0
 
-# =============================================================================
-# MODIFICATION 1: 
-# - Corrected `messages` from `List[Dict[str, str]]` to `List[Dict[str, Any]]` 
-#   to prevent a validation error and application crash.
-# - Changed default model to `gemini-2.5-pro` as per user's preference.
-# =============================================================================
 class ChatRequest(BaseModel):
     messages: List[Dict[str, Any]]
     model: str = "gemini-2.5-pro"
@@ -487,13 +481,15 @@ class LiteLLMAdapter:
             system_content = gemini_request_dict["system_instruction"]["parts"][0]["text"]
             litellm_kwargs["system_message"] = system_content
 
+        # The chat_request.model_dump() call now correctly provides the original
+        # messages list, without the problematic system message.
+        litellm_kwargs.update(chat_request.model_dump())
+
         if request.stream:
-            litellm_kwargs.update(chat_request.model_dump())
             gemini_stream = await self.chat_completion_with_litellm(litellm_kwargs)
             streaming_generator = StreamingResponseGenerator(request, self.claude_code_simulator)
             return streaming_generator.generate_sse_events(gemini_stream)
         else:
-            litellm_kwargs.update(chat_request.model_dump())
             gemini_response_model = await self.chat_completion_with_litellm(litellm_kwargs)
             gemini_response_dict = gemini_response_model.model_dump()
             return await self.gemini_to_anthropic.convert_response(gemini_response_dict, request)
@@ -571,10 +567,6 @@ async def optimized_health_check_task():
             logger.error(f"Health check error: {e}")
             await asyncio.sleep(60)
 
-# =============================================================================
-# MODIFICATION 2:
-# Added a custom model conversion function to meet user's specific model needs.
-# =============================================================================
 def custom_convert_model(anthropic_model: str) -> str:
     """
     Converts an Anthropic model name to a corresponding Gemini model name
@@ -614,11 +606,6 @@ async def lifespan(app: FastAPI):
         working_dir = os.getenv("CLAUDE_CODE_WORKING_DIR", ".")
         api_config = AnthropicAPIConfig(working_directory=working_dir)
         
-        # =============================================================================
-        # MODIFICATION 3:
-        # Monkey-patch the original model converter with our custom function
-        # during application startup. This applies the new mapping logic.
-        # =============================================================================
         api_config.anthropic_to_gemini.convert_model = custom_convert_model
         logger.info("Applied custom model mapping: 'opus'/'sonnet' -> 'gemini-2.5-pro', 'haiku' -> 'gemini-2.5-flash'.")
 
