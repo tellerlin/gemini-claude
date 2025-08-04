@@ -1,3 +1,4 @@
+# main.py
 import asyncio
 import time
 import random
@@ -435,6 +436,99 @@ class LiteLLMAdapter:
             logger.error(f"Error validating messages: {e}")
             return False
 
+    def _fix_gemini_response_format(self, response_dict: Dict) -> Dict:
+        """
+        Fixes the Gemini API response format to ensure it contains the necessary fields
+        and conforms to a standard OpenAI-like structure.
+        """
+        response_dict = copy.deepcopy(response_dict)
+        try:
+            is_stream_chunk = False
+            # If the response already has a valid choices field, it might be correct.
+            if 'choices' in response_dict and response_dict['choices']:
+                if 'delta' in response_dict['choices'][0]:
+                    is_stream_chunk = True
+                elif 'message' in response_dict['choices'][0]:
+                    # This looks like a valid non-streamed response, we can probably return it.
+                    # But we'll continue to ensure all fields are present.
+                    pass
+            else:
+                response_dict['choices'] = []
+
+            content = ""
+            finish_reason = "stop"
+            
+            # Check for Gemini's native format ('candidates')
+            if 'candidates' in response_dict and response_dict.get('candidates'):
+                candidate = response_dict['candidates'][0]
+                if 'content' in candidate and candidate['content'].get('parts'):
+                    content = '\n'.join([part.get('text', '') for part in candidate['content']['parts'] if 'text' in part])
+                elif 'content' in candidate and 'text' in candidate.get('content', {}):
+                    content = candidate['content']['text']
+
+                if 'finishReason' in candidate:
+                    finish_reason = candidate['finishReason'].lower()
+            
+            # Fallback for other possible (less common) structures
+            elif 'text' in response_dict:
+                content = response_dict['text']
+            elif 'message' in response_dict and 'content' in response_dict['message']:
+                content = response_dict['message']['content']
+
+            # If choices array is still empty, construct a standard one
+            if not response_dict.get('choices'):
+                logger.warning("Response missing 'choices' array. Reconstructing from available data.")
+                response_dict['choices'] = [{
+                    'index': 0,
+                    'message': {
+                        'role': 'assistant',
+                        'content': content or "I am unable to provide a response at this time.",
+                        'tool_calls': None,
+                        'function_call': None
+                    },
+                    'finish_reason': finish_reason
+                }]
+            
+            # Ensure top-level fields exist for consistency
+            if 'id' not in response_dict:
+                response_dict['id'] = f"chatcmpl-{int(time.time())}-{random.randint(1000, 9999)}"
+            if 'object' not in response_dict:
+                response_dict['object'] = 'chat.completion.chunk' if is_stream_chunk else 'chat.completion'
+            if 'created' not in response_dict:
+                response_dict['created'] = int(time.time())
+            if 'model' not in response_dict:
+                response_dict['model'] = 'gemini-2.5-pro' 
+            if 'usage' not in response_dict and not is_stream_chunk:
+                prompt_tokens = 0
+                completion_tokens = len((content or "").split())
+                response_dict['usage'] = {
+                    'prompt_tokens': prompt_tokens,
+                    'completion_tokens': completion_tokens,
+                    'total_tokens': prompt_tokens + completion_tokens
+                }
+
+            logger.debug(f"Fixed response format: {json.dumps(response_dict, indent=2)}")
+            return response_dict
+            
+        except Exception as e:
+            logger.error(f"Error fixing response format for dict: {response_dict}", exc_info=True)
+            # Return a minimal, valid error response to prevent downstream crashes
+            return {
+                'id': f"chatcmpl-error-{int(time.time())}",
+                'object': 'chat.completion',
+                'created': int(time.time()),
+                'model': 'gemini-fallback',
+                'choices': [{
+                    'index': 0,
+                    'message': {
+                        'role': 'assistant',
+                        'content': f"An error occurred while processing the model's response: {e}",
+                    },
+                    'finish_reason': 'error'
+                }],
+                'usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+            }
+
     async def _execute_chat_completion(self, request: ChatRequest) -> Union[Dict, Any]:
         last_error = "No active keys to attempt request."
         attempted_keys = set()
@@ -484,14 +578,33 @@ class LiteLLMAdapter:
                     response = await asyncio.wait_for(
                         litellm.acompletion(**kwargs), timeout=self.config.GEMINI_REQUEST_TIMEOUT
                     )
+
+                    # For streaming, we return the generator directly.
+                    if request.stream:
+                        await self.key_manager.mark_key_success(key_info.key)
+                        await self.key_manager.record_key_performance(key_info.key, time.time() - start_time, True)
+                        return response
+
+                    # For non-streaming, validate and fix the response format.
+                    response_dict = response.model_dump() if hasattr(response, 'model_dump') else response
+                    fixed_response_dict = self._fix_gemini_response_format(response_dict)
+                    
+                    if hasattr(response, 'model_dump'):
+                        response.__dict__.update(fixed_response_dict)
+                        final_response = response
+                    else:
+                        final_response = fixed_response_dict
+
                     response_time = time.time() - start_time
                     await self.key_manager.mark_key_success(key_info.key)
                     await self.key_manager.record_key_performance(key_info.key, response_time, True)
-                    return response
+                    return final_response
+
                 except Exception as e:
                     response_time = time.time() - start_time
                     await self.key_manager.mark_key_failed(key_info.key, str(e))
                     await self.key_manager.record_key_performance(key_info.key, response_time, False)
+                    logger.error(f"Request failed with key {key_info.key[:8]}...: {str(e)}", exc_info=True)
                     raise e
         
         active_keys = [k for k in self.key_manager.keys.values() if k.status == KeyStatus.ACTIVE]
@@ -515,7 +628,8 @@ class LiteLLMAdapter:
                     result = task.result()
                     if result:
                         if not request.stream and cache_key and self.config.CACHE_ENABLED and performance.response_cache:
-                            await performance.response_cache.set(cache_key, result.model_dump() if hasattr(result, 'model_dump') else result)
+                            cache_result = result.model_dump() if hasattr(result, 'model_dump') else result
+                            await performance.response_cache.set(cache_key, cache_result)
                         return result
                 except Exception as e:
                     last_error = str(e)
@@ -582,6 +696,8 @@ class LiteLLMAdapter:
             else:
                 gemini_response_model = await self.chat_completion_with_litellm(litellm_kwargs)
                 gemini_response_dict = gemini_response_model.model_dump()
+                
+                # The compatibility patch has been removed. The now-fixed converter can handle the standardized response.
                 return await self.gemini_to_anthropic.convert_response(gemini_response_dict, request)
         except HTTPException:
             raise
@@ -616,15 +732,34 @@ class LiteLLMAdapter:
         try:
             start_time = time.time()
             response = await litellm.acompletion(**litellm_kwargs)
+            
+            # If it's a stream, return the generator directly.
+            if litellm_kwargs.get("stream", False):
+                response_time = time.time() - start_time
+                await self.key_manager.mark_key_success(key_info.key)
+                await self.key_manager.record_key_performance(key_info.key, response_time, True)
+                return response
+
+            # For non-streaming, fix the response before returning
+            response_dict = response.model_dump() if hasattr(response, 'model_dump') else response
+            fixed_response_dict = self._fix_gemini_response_format(response_dict)
+
+            if hasattr(response, 'model_dump'):
+                response.__dict__.update(fixed_response_dict)
+                final_response = response
+            else:
+                final_response = fixed_response_dict
+
             response_time = time.time() - start_time
             await self.key_manager.mark_key_success(key_info.key)
             await self.key_manager.record_key_performance(key_info.key, response_time, True)
-            return response
+            return final_response
+            
         except Exception as e:
             response_time = time.time() - start_time
             await self.key_manager.mark_key_failed(key_info.key, str(e))
             await self.key_manager.record_key_performance(key_info.key, response_time, False)
-            logger.error(f"LiteLLM call failed with key {key_info.key[:8]}: {e}")
+            logger.error(f"LiteLLM call failed with key {key_info.key[:8]}: {e}", exc_info=True)
             failed_kwargs = {k: v for k, v in litellm_kwargs.items() if k != 'api_key'}
             logger.error(f"Failed request kwargs: {json.dumps(failed_kwargs, indent=2)}")
             raise HTTPException(status_code=502, detail=f"Model provider error: {e}")
@@ -888,4 +1023,3 @@ async def global_exception_handler(request: Request, exc: Exception):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info", reload=True)
-

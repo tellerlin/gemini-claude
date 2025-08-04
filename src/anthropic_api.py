@@ -1,3 +1,4 @@
+# anthropic_api.py
 import asyncio
 import time
 import uuid
@@ -615,13 +616,13 @@ class AnthropicToGeminiConverter:
                             }
                         })
                     elif block.type == "tool_result":
+                        # This part is crucial for tool execution feedback
                         parts.append({
-                            "function_response": {
-                                "name": block.name if hasattr(block, 'name') else 'tool_result',
+                            "tool_response": {
+                                "name": block.tool_use_id, # Gemini expects the ID here
                                 "response": {
-                                    "name": block.name if hasattr(block, 'name') else 'tool_result',
+                                    "name": block.tool_use_id, # And here
                                     "content": json.dumps(block.content) if not isinstance(block.content, str) else block.content,
-                                    "tool_use_id": block.tool_use_id
                                 }
                             }
                         })
@@ -660,65 +661,84 @@ class GeminiToAnthropicConverter:
     def __init__(self, claude_code_simulator: ClaudeCodeToolSimulator):
         self.claude_code_simulator = claude_code_simulator
 
-    def convert_usage(self, gemini_usage: Optional[Dict[str, int]]) -> Usage:
-        if not gemini_usage:
-            return Usage(input_tokens=0, output_tokens=0)
-        
-        return Usage(
-            input_tokens=gemini_usage.get("prompt_token_count", 0),
-            output_tokens=gemini_usage.get("candidates_token_count", 0)
-        )
-
-    async def _parse_and_handle_tool_calls(self, gemini_parts: list) -> Tuple[List, str]:
-        anthropic_content = []
-        stop_reason = "end_turn"
-
-        for part in gemini_parts:
-            if "text" in part and part["text"]:
-                anthropic_content.append(ContentBlockText(type="text", text=part["text"]))
-            elif "function_call" in part:
-                tool_call = part["function_call"]
-                tool_use_id = f"toolu_{uuid.uuid4().hex[:8]}"
-                anthropic_content.append(ContentBlockToolUse(
-                    id=tool_use_id,
-                    name=tool_call["name"],
-                    input=tool_call.get("args", {})
-                ))
-                stop_reason = "tool_use"
-        
-        return anthropic_content, stop_reason
-
     async def convert_response(self, gemini_response: Dict[str, Any], original_request: MessagesRequest) -> MessagesResponse:
+        """
+        Converts a standardized (fixed) response from LiteLLM into an Anthropic MessagesResponse.
+        It reads from the 'choices' field, not the raw 'candidates' field.
+        """
         try:
-            candidate = gemini_response['candidates'][0]
-            gemini_parts = candidate.get('content', {}).get('parts', [])
-            
-            final_content, stop_reason = await self._parse_and_handle_tool_calls(gemini_parts)
+            # Read from the standardized 'choices' field
+            choice = gemini_response['choices'][0]
+            message = choice.get('message', {})
+            finish_reason_str = choice.get('finish_reason', 'end_turn')
 
-            if candidate.get('finishReason') == 'MAX_TOKENS':
+            # Extract content and tool calls from the standardized message
+            content_text = message.get('content')
+            tool_calls = message.get('tool_calls')
+
+            anthropic_content = []
+            stop_reason = "end_turn"
+
+            if content_text and isinstance(content_text, str):
+                anthropic_content.append(ContentBlockText(type="text", text=content_text))
+
+            if tool_calls and isinstance(tool_calls, list):
+                stop_reason = "tool_use"
+                for tool_call in tool_calls:
+                    function = tool_call.get('function', {})
+                    tool_use_id = tool_call.get('id', f"toolu_{uuid.uuid4().hex[:8]}")
+                    tool_name = function.get('name')
+                    tool_input_str = function.get('arguments', '{}')
+                    
+                    try:
+                        tool_input = json.loads(tool_input_str)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to decode tool arguments: {tool_input_str}")
+                        tool_input = {}
+                    
+                    if tool_name:
+                        anthropic_content.append(ContentBlockToolUse(
+                            id=tool_use_id,
+                            name=tool_name,
+                            input=tool_input
+                        ))
+
+            # If no content was generated at all, add an empty text block as per Anthropic spec
+            if not anthropic_content:
+                anthropic_content.append(ContentBlockText(text=""))
+
+            # Convert finish reason from OpenAI/LiteLLM standard to Anthropic standard
+            if finish_reason_str == "max_tokens":
                 stop_reason = "max_tokens"
-            elif candidate.get('finishReason') == 'STOP' and stop_reason != 'tool_use':
+            elif finish_reason_str == "stop_sequence":
+                stop_reason = "stop_sequence"
+            # Keep "tool_use" if it was set by the logic above
+            elif stop_reason != "tool_use":
                 stop_reason = "end_turn"
-            
-            # If no text or tool calls, add an empty text block as per Anthropic spec
-            if not final_content:
-                final_content.append(ContentBlockText(text=""))
                 
+            # Use the standardized 'usage' object directly
+            usage_data = gemini_response.get('usage', {})
+            usage = Usage(
+                input_tokens=usage_data.get('prompt_tokens', 0),
+                output_tokens=usage_data.get('completion_tokens', 0)
+            )
+
             return MessagesResponse(
                 id=f"msg_{gemini_response.get('id', uuid.uuid4().hex)}",
                 model=original_request.model,
                 role="assistant",
-                content=final_content,
+                content=anthropic_content,
                 stop_reason=stop_reason,
-                usage=self.convert_usage(gemini_response.get('usageMetadata'))
+                usage=usage
             )
         except (KeyError, IndexError) as e:
-            logger.error(f"Error converting Gemini response: {e}\nResponse: {gemini_response}")
+            logger.error(f"Error converting standardized Gemini response: {e}\nResponse: {gemini_response}", exc_info=True)
             return MessagesResponse(
                 id=f"msg_error_{uuid.uuid4().hex[:8]}", model=original_request.model,
-                role="assistant", content=[ContentBlockText(text=f"Error processing response: {str(e)}")],
+                role="assistant", content=[ContentBlockText(text=f"Error processing final response: {str(e)}")],
                 stop_reason="end_turn", usage=Usage(input_tokens=0, output_tokens=0)
             )
+
 
 class StreamingResponseGenerator:
     def __init__(self, original_request: MessagesRequest, claude_code_simulator: ClaudeCodeToolSimulator):
@@ -736,43 +756,68 @@ class StreamingResponseGenerator:
         full_response_parts = []
         input_tokens = 0
         output_tokens = 0
+        current_tool_calls = []
 
         async for chunk in gemini_stream:
-            usage_metadata = chunk.get('usageMetadata', {})
-            if "prompt_token_count" in usage_metadata:
-                input_tokens = usage_metadata["prompt_token_count"]
+            # The chunk should be in standardized OpenAI stream format
+            choice = chunk.get('choices', [{}])[0]
+            delta = choice.get('delta', {})
+            
+            # Handle input token usage once
+            if 'usage' in chunk and chunk['usage'].get('prompt_tokens') and not input_tokens:
+                input_tokens = chunk['usage']['prompt_tokens']
                 yield self._create_event("message_delta", {"usage": {"input_tokens": input_tokens}})
 
-            if not chunk.get('candidates'):
+            if not delta:
                 continue
+
+            # Handle text delta
+            if delta.get("content"):
+                yield self._start_content_block_if_needed(full_response_parts, "text")
+                delta_text = delta["content"]
+                yield self._create_event("content_block_delta", {"index": len(full_response_parts) - 1, "delta": {"type": "text_delta", "text": delta_text}})
+                self._update_full_response(full_response_parts, "text", delta_text)
             
-            delta_parts = chunk['candidates'][0].get('content', {}).get('parts', [])
-            
-            for part in delta_parts:
-                if "text" in part and part["text"]:
-                    yield self._start_content_block_if_needed(full_response_parts, "text")
-                    delta_text = part["text"]
-                    yield self._create_event("content_block_delta", {"index": len(full_response_parts) - 1, "delta": {"type": "text_delta", "text": delta_text}})
-                    self._update_full_response(full_response_parts, "text", delta_text)
+            # Handle tool call delta
+            if "tool_calls" in delta and delta["tool_calls"]:
+                yield self._stop_last_content_block_if_needed(full_response_parts)
+                for tool_call_chunk in delta["tool_calls"]:
+                    index = tool_call_chunk.get("index", len(current_tool_calls))
+                    
+                    if index >= len(current_tool_calls):
+                        current_tool_calls.append({})
+
+                    # Update the tool call with new chunk data
+                    current_tool_calls[index].update(tool_call_chunk)
+
+                    # If we have a complete tool call, yield it
+                    if 'id' in current_tool_calls[index] and 'function' in current_tool_calls[index] and 'name' in current_tool_calls[index]['function']:
+                        func = current_tool_calls[index]['function']
+                        if 'arguments' in func: # Wait for arguments to be complete
+                            tool_use_content = ContentBlockToolUse(
+                                id=current_tool_calls[index]['id'],
+                                name=func['name'],
+                                input=json.loads(func['arguments']) if func['arguments'] else {}
+                            )
+                            yield self._create_event("content_block_start", {"index": len(full_response_parts), "content_block": tool_use_content.model_dump()})
+                            full_response_parts.append(tool_use_content)
+                            yield self._create_event("content_block_stop", {"index": len(full_response_parts) - 1})
+                            
+            # Handle final chunk details
+            finish_reason = choice.get("finish_reason")
+            if finish_reason:
+                yield self._stop_last_content_block_if_needed(full_response_parts)
                 
-                elif "function_call" in part:
-                    yield self._stop_last_content_block_if_needed(full_response_parts)
-                    tool_call = part["function_call"]
-                    tool_use_id = f"toolu_{uuid.uuid4().hex[:8]}"
-                    tool_use_content = ContentBlockToolUse(id=tool_use_id, name=tool_call['name'], input=tool_call.get('args', {}))
-                    yield self._create_event("content_block_start", {"index": len(full_response_parts), "content_block": tool_use_content.model_dump()})
-                    full_response_parts.append(tool_use_content)
-                    yield self._create_event("content_block_stop", {"index": len(full_response_parts) - 1})
-
-        yield self._stop_last_content_block_if_needed(full_response_parts)
+                # Use the final usage data if available
+                if 'usage' in chunk and chunk['usage'].get('completion_tokens'):
+                    output_tokens = chunk['usage']['completion_tokens']
+                
+                stop_reason = "tool_use" if any(isinstance(p, ContentBlockToolUse) for p in full_response_parts) else "end_turn"
+                if finish_reason == "max_tokens":
+                    stop_reason = "max_tokens"
+                
+                yield self._create_event("message_delta", {"delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": output_tokens}})
         
-        final_chunk = await gemini_stream.__anext__()
-        final_usage = final_chunk.get('usageMetadata', {})
-        output_tokens = final_usage.get('candidates_token_count', output_tokens)
-
-        stop_reason = "tool_use" if any(isinstance(p, ContentBlockToolUse) for p in full_response_parts) else "end_turn"
-        
-        yield self._create_event("message_delta", {"delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": output_tokens}})
         yield self._create_event("message_stop", {})
 
     def _update_full_response(self, parts, type, text_delta):
@@ -793,7 +838,16 @@ class StreamingResponseGenerator:
 
     def _create_event(self, event_type: str, data: Dict) -> str:
         if not data: return ""
-        json_data = json.dumps({'type': event_type, **data})
+        # The 'type' key should be at the top level of the JSON data payload
+        event_data = {'type': event_type, **data}
+        if event_type == "message_delta":
+            # Anthropic's message_delta format has 'type' and 'delta' keys at the same level
+            event_data = {'type': 'message_delta', 'delta': data.get('delta', {}), 'usage': data.get('usage', {})}
+        elif event_type == "message_start":
+             event_data = data # message_start has 'type' inside 'message'
+             event_data['type'] = 'message_start'
+        
+        json_data = json.dumps(event_data)
         return f"event: {event_type}\ndata: {json_data}\n\n"
 
 class ToolConverter:
