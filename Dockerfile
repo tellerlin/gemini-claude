@@ -39,7 +39,7 @@ WORKDIR /app
 
 # --- MODIFIED: Copy all source files from the build context root ---
 # Copy the source code, chown to the non-root user
-COPY --chown=appuser:appuser . .
+COPY --chown=appuser:appuser . /app/
 
 # Create the logs directory and set ownership
 RUN mkdir -p logs && chown appuser:appuser logs
