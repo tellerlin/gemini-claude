@@ -798,17 +798,21 @@ class StreamingResponseGenerator:
 
 class ToolConverter:
     def convert_tools_to_gemini(self, tools: List[Tool]) -> List[Dict[str, Any]]:
-        gemini_tools = []
-        function_declarations = []
+        """
+        Converts Anthropic tools to the standardized OpenAI tool format that LiteLLM expects.
+        LiteLLM will then handle the conversion to the provider-specific format (Gemini).
+        """
+        openai_tools = []
         for tool in tools:
-            function_declarations.append({
-                "name": tool.name,
-                "description": tool.description or "",
-                "parameters": tool.input_schema
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "parameters": tool.input_schema
+                }
             })
-        if function_declarations:
-            gemini_tools.append({"function_declarations": function_declarations})
-        return gemini_tools
+        return openai_tools
 
     def convert_tool_choice_to_gemini(self, tool_choice: Dict[str, Any]) -> str:
         choice_type = tool_choice.get("type", "auto").lower()
