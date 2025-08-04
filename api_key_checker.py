@@ -32,7 +32,7 @@ GEMINI_KEY_PATTERN = re.compile(r"^AIzaSy[A-Za-z0-9_-]{33}$")
 
 def check_gemini_api_key(api_key: str) -> Tuple[str, str]:
     """
-    Checks the validity of a single Google Gemini API key.
+    Checks if a single Google Gemini API key can return a value (has quota).
 
     Args:
         api_key: The API key to check.
@@ -43,13 +43,23 @@ def check_gemini_api_key(api_key: str) -> Tuple[str, str]:
     """
     try:
         genai.configure(api_key=api_key)
-        # Use a lightweight API call (listing models) to check the key's validity
-        genai.list_models()
-        return 'valid', 'Key is valid and authenticated successfully.'
+        
+        # --- MODIFIED PART ---
+        # Instead of listing models, we now perform a minimal content generation
+        # to accurately check for quota and usage limits.
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model.generate_content(
+            'test', 
+            generation_config=genai.types.GenerationConfig(max_output_tokens=1)
+        )
+        # --- END MODIFIED PART ---
+
+        return 'valid', 'Key is valid and has sufficient quota.'
     except (google_exceptions.PermissionDenied, google_exceptions.Unauthenticated) as e:
         return 'permanently invalid', f'Authentication failed. Key is invalid or disabled. (Reason: {getattr(e, "message", str(e))})'
     except google_exceptions.ResourceExhausted as e:
-        return 'temporarily invalid', f'Rate limit exceeded or quota finished. Key is temporarily unavailable. (Reason: {getattr(e, "message", str(e))})'
+        # This is the key change: a 429 error now correctly identifies a key that is out of quota.
+        return 'temporarily invalid', f'Quota exceeded or rate limit hit. (Reason: {getattr(e, "message", str(e))})'
     except google_exceptions.DeadlineExceeded:
         return 'temporarily invalid', 'Request timed out. Could be a temporary issue with the API or network.'
     except google_exceptions.ServiceUnavailable:
@@ -70,7 +80,6 @@ def update_env_file(keys_to_keep: List[str], original_env_path: str = '.env'):
     try:
         with open(original_env_path, 'r') as f_in, open(new_env_path, 'w') as f_out:
             for line in f_in:
-                # Find the correct line and replace it, keeping all other lines intact
                 if line.strip().startswith('GEMINI_API_KEYS='):
                     f_out.write(f'GEMINI_API_KEYS={updated_keys_str}\n')
                 else:
@@ -81,7 +90,6 @@ def update_env_file(keys_to_keep: List[str], original_env_path: str = '.env'):
         with open(new_env_path, 'w') as f_out:
             f_out.write('# Please add back any other necessary .env variables\n')
             f_out.write(f'GEMINI_API_KEYS={updated_keys_str}\n')
-
 
     print(f"\n{bcolors.OKGREEN}✅ Success! A new file `.env.updated` has been created.{bcolors.ENDC}")
     print(f"It contains your original settings with the updated API keys.")
@@ -104,7 +112,6 @@ def main():
     print(f"{bcolors.HEADER}--- Step 1: Pre-processing Keys ---{bcolors.ENDC}")
     print(f"Found {len(initial_keys)} key(s) in .env file.")
 
-    # --- Format Validation ---
     valid_format_keys, invalid_format_keys = [], []
     for key in initial_keys:
         if GEMINI_KEY_PATTERN.match(key):
@@ -116,7 +123,6 @@ def main():
         print(f"{bcolors.WARNING}Warning: Found {len(invalid_format_keys)} key(s) with an invalid format. They will be ignored:{bcolors.ENDC}")
         for key in invalid_format_keys: print(f"  - {key}")
 
-    # --- Deduplication ---
     unique_keys = list(dict.fromkeys(valid_format_keys))
     if len(valid_format_keys) > len(unique_keys):
         print(f"{bcolors.OKCYAN}Removed {len(valid_format_keys) - len(unique_keys)} duplicate key(s).{bcolors.ENDC}")
@@ -138,19 +144,17 @@ def main():
         categorized_keys[status].append(key)
 
         color_map = {'valid': bcolors.OKGREEN, 'temporarily invalid': bcolors.WARNING, 'permanently invalid': bcolors.FAIL}
-        print(f"\r[{idx+1}/{len(unique_keys)}] Key {bcolors.BOLD}{key_display}{bcolors.ENDC}: {color_map[status]}{status.upper()}{bcolors.ENDC} - {message}")
+        print(f"\r[{idx+1}/{len(unique_keys)}] Key {bcolors.BOLD}{key_display}{bcolors.ENDC}: {color_map[status]}{status.upper()}{bcolors.ENDC} - {message.splitlines()[0]}")
 
         if idx < len(unique_keys) - 1:
             time.sleep(1)
 
-    # --- Print Summary ---
     print("\n" + "="*22 + " SUMMARY " + "="*22)
-    print(f"{bcolors.OKGREEN}Valid keys: {len(categorized_keys['valid'])}{bcolors.ENDC}")
-    print(f"{bcolors.WARNING}Temporarily invalid keys: {len(categorized_keys['temporarily invalid'])}{bcolors.ENDC}")
+    print(f"{bcolors.OKGREEN}Valid keys (can return value): {len(categorized_keys['valid'])}{bcolors.ENDC}")
+    print(f"{bcolors.WARNING}Temporarily invalid keys (e.g., out of quota): {len(categorized_keys['temporarily invalid'])}{bcolors.ENDC}")
     print(f"{bcolors.FAIL}Permanently invalid keys: {len(categorized_keys['permanently invalid'])} (includes format-invalid keys){bcolors.ENDC}")
     print("="*53 + "\n")
 
-    # --- User choice for cleanup ---
     try:
         while True:
             print(f"{bcolors.HEADER}--- Step 3: Update .env File ---{bcolors.ENDC}")
