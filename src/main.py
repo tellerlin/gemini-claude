@@ -880,6 +880,7 @@ app = FastAPI(
 )
 
 async def stream_generator(response_stream):
+    """Fixed stream generator that properly handles StopAsyncIteration"""
     try:
         async for chunk in response_stream:
             try:
@@ -893,11 +894,16 @@ async def stream_generator(response_stream):
             except Exception as e:
                 logger.error(f"Error serializing chunk: {e}")
                 continue
-        yield "data: [DONE]\n\n"
+    except StopAsyncIteration:
+        # Handle StopAsyncIteration properly to prevent RuntimeError
+        pass
     except Exception as e:
         logger.error(f"Error during streaming: {e}")
         error_payload = {"error": {"message": str(e), "type": "stream_error"}}
         yield f"data: {json.dumps(error_payload)}\n\n"
+    finally:
+        # Ensure we always send the termination signal
+        yield "data: [DONE]\n\n"
 
 @app.get("/", include_in_schema=False)
 async def root():

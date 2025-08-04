@@ -739,7 +739,7 @@ class GeminiToAnthropicConverter:
                 stop_reason="end_turn", usage=Usage(input_tokens=0, output_tokens=0)
             )
 
-
+# MODIFIED: Updated StreamingResponseGenerator class
 class StreamingResponseGenerator:
     def __init__(self, original_request: MessagesRequest, claude_code_simulator: ClaudeCodeToolSimulator):
         self.original_request = original_request
@@ -747,78 +747,92 @@ class StreamingResponseGenerator:
         self.claude_code_simulator = claude_code_simulator
 
     async def generate_sse_events(self, gemini_stream: AsyncGenerator[Dict, None]) -> AsyncGenerator[str, None]:
-        yield self._create_event("message_start", {"message": {
-            "id": self.message_id, "type": "message", "role": "assistant",
-            "model": self.original_request.model, "content": [], "stop_reason": None,
-            "usage": {"input_tokens": 0, "output_tokens": 0}
-        }})
-        
-        full_response_parts = []
-        input_tokens = 0
-        output_tokens = 0
-        current_tool_calls = []
-
-        async for chunk in gemini_stream:
-            # The chunk should be in standardized OpenAI stream format
-            choice = chunk.get('choices', [{}])[0]
-            delta = choice.get('delta', {})
+        try:
+            yield self._create_event("message_start", {"message": {
+                "id": self.message_id, "type": "message", "role": "assistant",
+                "model": self.original_request.model, "content": [], "stop_reason": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0}
+            }})
             
-            # Handle input token usage once
-            if 'usage' in chunk and chunk['usage'].get('prompt_tokens') and not input_tokens:
-                input_tokens = chunk['usage']['prompt_tokens']
-                yield self._create_event("message_delta", {"usage": {"input_tokens": input_tokens}})
+            full_response_parts = []
+            input_tokens = 0
+            output_tokens = 0
+            current_tool_calls = []
 
-            if not delta:
-                continue
-
-            # Handle text delta
-            if delta.get("content"):
-                yield self._start_content_block_if_needed(full_response_parts, "text")
-                delta_text = delta["content"]
-                yield self._create_event("content_block_delta", {"index": len(full_response_parts) - 1, "delta": {"type": "text_delta", "text": delta_text}})
-                self._update_full_response(full_response_parts, "text", delta_text)
-            
-            # Handle tool call delta
-            if "tool_calls" in delta and delta["tool_calls"]:
-                yield self._stop_last_content_block_if_needed(full_response_parts)
-                for tool_call_chunk in delta["tool_calls"]:
-                    index = tool_call_chunk.get("index", len(current_tool_calls))
+            try:
+                async for chunk in gemini_stream:
+                    # The chunk should be in standardized OpenAI stream format
+                    choice = chunk.get('choices', [{}])[0]
+                    delta = choice.get('delta', {})
                     
-                    if index >= len(current_tool_calls):
-                        current_tool_calls.append({})
+                    # Handle input token usage once
+                    if 'usage' in chunk and chunk['usage'].get('prompt_tokens') and not input_tokens:
+                        input_tokens = chunk['usage']['prompt_tokens']
+                        yield self._create_event("message_delta", {"usage": {"input_tokens": input_tokens}})
 
-                    # Update the tool call with new chunk data
-                    current_tool_calls[index].update(tool_call_chunk)
+                    if not delta:
+                        continue
 
-                    # If we have a complete tool call, yield it
-                    if 'id' in current_tool_calls[index] and 'function' in current_tool_calls[index] and 'name' in current_tool_calls[index]['function']:
-                        func = current_tool_calls[index]['function']
-                        if 'arguments' in func: # Wait for arguments to be complete
-                            tool_use_content = ContentBlockToolUse(
-                                id=current_tool_calls[index]['id'],
-                                name=func['name'],
-                                input=json.loads(func['arguments']) if func['arguments'] else {}
-                            )
-                            yield self._create_event("content_block_start", {"index": len(full_response_parts), "content_block": tool_use_content.model_dump()})
-                            full_response_parts.append(tool_use_content)
-                            yield self._create_event("content_block_stop", {"index": len(full_response_parts) - 1})
+                    # Handle text delta
+                    if delta.get("content"):
+                        yield self._start_content_block_if_needed(full_response_parts, "text")
+                        delta_text = delta["content"]
+                        yield self._create_event("content_block_delta", {"index": len(full_response_parts) - 1, "delta": {"type": "text_delta", "text": delta_text}})
+                        self._update_full_response(full_response_parts, "text", delta_text)
+                    
+                    # Handle tool call delta
+                    if "tool_calls" in delta and delta["tool_calls"]:
+                        yield self._stop_last_content_block_if_needed(full_response_parts)
+                        for tool_call_chunk in delta["tool_calls"]:
+                            index = tool_call_chunk.get("index", len(current_tool_calls))
                             
-            # Handle final chunk details
-            finish_reason = choice.get("finish_reason")
-            if finish_reason:
-                yield self._stop_last_content_block_if_needed(full_response_parts)
-                
-                # Use the final usage data if available
-                if 'usage' in chunk and chunk['usage'].get('completion_tokens'):
-                    output_tokens = chunk['usage']['completion_tokens']
-                
-                stop_reason = "tool_use" if any(isinstance(p, ContentBlockToolUse) for p in full_response_parts) else "end_turn"
-                if finish_reason == "max_tokens":
-                    stop_reason = "max_tokens"
-                
-                yield self._create_event("message_delta", {"delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": output_tokens}})
+                            if index >= len(current_tool_calls):
+                                current_tool_calls.append({})
+
+                            # Update the tool call with new chunk data
+                            current_tool_calls[index].update(tool_call_chunk)
+
+                            # If we have a complete tool call, yield it
+                            if 'id' in current_tool_calls[index] and 'function' in current_tool_calls[index] and 'name' in current_tool_calls[index]['function']:
+                                func = current_tool_calls[index]['function']
+                                if 'arguments' in func: # Wait for arguments to be complete
+                                    tool_use_content = ContentBlockToolUse(
+                                        id=current_tool_calls[index]['id'],
+                                        name=func['name'],
+                                        input=json.loads(func['arguments']) if func['arguments'] else {}
+                                    )
+                                    yield self._create_event("content_block_start", {"index": len(full_response_parts), "content_block": tool_use_content.model_dump()})
+                                    full_response_parts.append(tool_use_content)
+                                    yield self._create_event("content_block_stop", {"index": len(full_response_parts) - 1})
+                                    
+                    # Handle final chunk details
+                    finish_reason = choice.get("finish_reason")
+                    if finish_reason:
+                        yield self._stop_last_content_block_if_needed(full_response_parts)
+                        
+                        # Use the final usage data if available
+                        if 'usage' in chunk and chunk['usage'].get('completion_tokens'):
+                            output_tokens = chunk['usage']['completion_tokens']
+                        
+                        stop_reason = "tool_use" if any(isinstance(p, ContentBlockToolUse) for p in full_response_parts) else "end_turn"
+                        if finish_reason == "max_tokens":
+                            stop_reason = "max_tokens"
+                        
+                        yield self._create_event("message_delta", {"delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": output_tokens}})
+                        break # End stream after finish reason
+                        
+            except StopAsyncIteration:
+                # Handle StopAsyncIteration properly
+                logger.debug("Stream completed normally")
+            except Exception as e:
+                logger.error(f"Error processing stream: {e}", exc_info=True)
+                yield self._create_event("error", {"error": {"message": str(e), "type": "stream_error"}})
         
-        yield self._create_event("message_stop", {})
+        except Exception as e:
+            logger.error(f"Critical error in streaming: {e}", exc_info=True)
+            yield self._create_event("error", {"error": {"message": str(e), "type": "critical_error"}})
+        finally:
+            yield self._create_event("message_stop", {})
 
     def _update_full_response(self, parts, type, text_delta):
         if parts and isinstance(parts[-1], ContentBlockText):
@@ -837,7 +851,7 @@ class StreamingResponseGenerator:
          return ""
 
     def _create_event(self, event_type: str, data: Dict) -> str:
-        if not data: return ""
+        if not data and event_type != "message_stop": return ""
         # The 'type' key should be at the top level of the JSON data payload
         event_data = {'type': event_type, **data}
         if event_type == "message_delta":
@@ -846,7 +860,9 @@ class StreamingResponseGenerator:
         elif event_type == "message_start":
              event_data = data # message_start has 'type' inside 'message'
              event_data['type'] = 'message_start'
-        
+        elif event_type == "message_stop":
+             event_data = {'type': 'message_stop'}
+
         json_data = json.dumps(event_data)
         return f"event: {event_type}\ndata: {json_data}\n\n"
 
