@@ -390,50 +390,55 @@ class LiteLLMAdapter:
                     if request_hash in self._request_deduplicator:
                         del self._request_deduplicator[request_hash]
     
-    def _safe_validate_messages(self, messages: List) -> bool:
-        """Safe message validation that also converts parts to content."""
+    def _safe_validate_messages(self, messages: List[Dict[str, Any]]) -> bool:
+        """
+        Safe message validation that also standardizes message format by converting 'parts' or 'text' to 'content'.
+        This method modifies the message list in-place to prevent downstream errors with LiteLLM.
+        """
         try:
             if not messages:
                 logger.warning("Messages list is empty")
                 return False
             
             for i, msg in enumerate(messages):
-                if not isinstance(msg, dict):
-                    logger.warning(f"Message {i} is not a dict: {type(msg)}")
+                if not isinstance(msg, dict) or 'role' not in msg:
+                    logger.warning(f"Message {i} is not a valid dict with a 'role'.")
                     return False
-                
-                if 'role' not in msg:
-                    logger.warning(f"Message {i} missing 'role': {msg}")
-                    return False
-                
-                has_content = False
-                
-                if 'content' in msg and msg['content']:
-                    has_content = True
-                
-                elif 'parts' in msg and isinstance(msg['parts'], list) and len(msg['parts']) > 0:
+
+                # Rule 1: If 'content' exists, it is the source of truth. Remove other text-like fields.
+                if 'content' in msg:
+                    if 'parts' in msg:
+                        logger.debug(f"Message {i} has both 'content' and 'parts'. Removing 'parts' to prevent conflict.")
+                        del msg['parts']
+                    if 'text' in msg:
+                        logger.debug(f"Message {i} has both 'content' and 'text'. Removing 'text'.")
+                        del msg['text']
+                    continue
+
+                # Rule 2: If no 'content', but 'parts' exists, convert it to 'content'.
+                if 'parts' in msg and isinstance(msg['parts'], list):
                     text_parts = []
                     for part in msg['parts']:
-                        if isinstance(part, dict) and 'text' in part and part['text'].strip():
+                        if isinstance(part, dict) and 'text' in part and isinstance(part['text'], str):
                             text_parts.append(part['text'])
                     
-                    if text_parts:
-                        msg['content'] = '\n\n'.join(text_parts)
-                        has_content = True
-                        logger.debug(f"Converted parts to content for message {i}: {len(text_parts)} parts combined")
-
-                elif 'text' in msg and msg['text']:
-                    has_content = True
-                    if 'content' not in msg:
-                        msg['content'] = msg['text']
-                        logger.debug(f"Converted text to content for message {i}")
+                    msg['content'] = '\n\n'.join(text_parts)
+                    del msg['parts']  # **THE FIX**: Always remove parts after processing.
+                    logger.debug(f"Converted 'parts' to 'content' for message {i} and removed 'parts' field.")
+                    continue
                 
-                if not has_content:
-                    logger.warning(f"Message {i} has no valid content: {msg}")
-                    
+                # Rule 3: If no 'content' or 'parts', but 'text' exists, convert it.
+                if 'text' in msg and isinstance(msg['text'], str):
+                    msg['content'] = msg['text']
+                    del msg['text']
+                    logger.debug(f"Moved 'text' to 'content' for message {i}.")
+
+                # Rule 4: For messages that are not text (e.g., tool calls), they won't have 'content'.
+                # This is acceptable. The main goal is to resolve ambiguity for text-based messages.
+            
             return True
         except Exception as e:
-            logger.error(f"Error validating messages: {e}")
+            logger.error(f"Error during message validation and cleanup: {e}", exc_info=True)
             return False
 
     def _fix_gemini_response_format(self, response_dict: Dict) -> Dict:
@@ -655,9 +660,14 @@ class LiteLLMAdapter:
                 logger.error(f"Original request: {request.model_dump()}")
                 logger.error(f"Converted request: {gemini_request_dict}")
                 raise HTTPException(status_code=400, detail="Messages cannot be empty after conversion")
+
+            # Clean up the converted messages to ensure LiteLLM compatibility
+            messages_copy = copy.deepcopy(gemini_request_dict["messages"])
+            if not self._safe_validate_messages(messages_copy):
+                raise HTTPException(status_code=400, detail="Message validation and cleanup failed after conversion")
             
             chat_request_data = {
-                "messages": gemini_request_dict["messages"],
+                "messages": messages_copy,  # Use the cleaned messages
                 "model": gemini_request_dict["model"],
                 "temperature": gemini_request_dict.get("temperature"),
                 "max_tokens": gemini_request_dict.get("max_tokens"),
@@ -697,7 +707,6 @@ class LiteLLMAdapter:
                 gemini_response_model = await self.chat_completion_with_litellm(litellm_kwargs)
                 gemini_response_dict = gemini_response_model.model_dump()
                 
-                # The compatibility patch has been removed. The now-fixed converter can handle the standardized response.
                 return await self.gemini_to_anthropic.convert_response(gemini_response_dict, request)
         except HTTPException:
             raise
@@ -716,10 +725,12 @@ class LiteLLMAdapter:
         logger.info(f"LiteLLM call - Model: {litellm_kwargs['model']}, Key: {key_info.key[:8]}...")
         logger.info(f"Messages count: {len(litellm_kwargs.get('messages', []))}")
         
+        # Note: messages are now cleaned in the calling function (anthropic_messages_completion)
+        # A redundant check here is still safe.
         messages_copy = copy.deepcopy(litellm_kwargs.get('messages', []))
         
         if not self._safe_validate_messages(messages_copy):
-            raise HTTPException(status_code=400, detail="Message validation failed")
+            raise HTTPException(status_code=400, detail="Message validation failed just before LiteLLM call")
         
         litellm_kwargs['messages'] = messages_copy
         
