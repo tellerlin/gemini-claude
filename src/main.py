@@ -368,6 +368,9 @@ class LiteLLMAdapter:
                     if request_hash in self._request_deduplicator:
                         del self._request_deduplicator[request_hash]
     
+    # =============================================================================
+    # FIX #1: Added robust message validation within the try_key_request function.
+    # =============================================================================
     async def _execute_chat_completion(self, request: ChatRequest) -> Union[Dict, Any]:
         last_error = "No active keys to attempt request."
         attempted_keys = set()
@@ -395,10 +398,26 @@ class LiteLLMAdapter:
                 start_time = time.time()
                 try:
                     kwargs = {
-                        "model": f"gemini/{request.model}", "messages": request.messages,
-                        "api_key": key_info.key, "temperature": request.temperature,
+                        "model": f"gemini/{request.model}", 
+                        "messages": request.messages,
+                        "api_key": key_info.key, 
+                        "temperature": request.temperature,
                         "stream": request.stream,
                     }
+                    
+                    # Ensure messages is not empty
+                    if not kwargs["messages"]:
+                        raise ValueError("Messages list is empty")
+                    
+                    # Validate each message has the required fields
+                    for msg in kwargs["messages"]:
+                        if not isinstance(msg, dict):
+                            raise ValueError(f"Invalid message format: {msg}")
+                        if "role" not in msg:
+                            raise ValueError(f"Message missing 'role' field: {msg}")
+                        if "content" not in msg and "parts" not in msg:
+                            raise ValueError(f"Message missing 'content' or 'parts' field: {msg}")
+                    
                     if request.max_tokens:
                         kwargs["max_tokens"] = request.max_tokens
                     if request.stop_sequences:
@@ -417,7 +436,7 @@ class LiteLLMAdapter:
                     await self.key_manager.record_key_performance(key_info.key, response_time, False)
                     raise e
         
-        active_keys = [k for k in self.keys.values() if k.status == KeyStatus.ACTIVE]
+        active_keys = [k for k in self.key_manager.keys.values() if k.status == KeyStatus.ACTIVE]
         if not active_keys:
             raise HTTPException(status_code=503, detail="No available API keys")
         
@@ -448,60 +467,92 @@ class LiteLLMAdapter:
             
         raise HTTPException(status_code=502, detail=f"All attempted keys failed. Last error: {last_error}")
 
+    # =============================================================================
+    # FIX #2: Added message validation and a more robust error handling block.
+    # =============================================================================
     async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
-        gemini_request_dict = self.anthropic_to_gemini.convert_request(request)
-        
-        chat_request_data = {
-            "messages": gemini_request_dict["messages"],
-            "model": gemini_request_dict["model"],
-            "temperature": gemini_request_dict.get("temperature"),
-            "max_tokens": gemini_request_dict.get("max_tokens"),
-            "stream": gemini_request_dict["stream"]
-        }
-        
-        if chat_request_data["model"].startswith("gemini/"):
-            chat_request_data["model"] = chat_request_data["model"].replace("gemini/", "")
+        try:
+            gemini_request_dict = self.anthropic_to_gemini.convert_request(request)
+            
+            # Validate that messages exist after conversion
+            if not gemini_request_dict.get("messages"):
+                logger.error(f"Empty messages after conversion. Original request: {request.messages}")
+                raise HTTPException(status_code=400, detail="Messages cannot be empty after conversion")
+            
+            chat_request_data = {
+                "messages": gemini_request_dict["messages"],
+                "model": gemini_request_dict["model"],
+                "temperature": gemini_request_dict.get("temperature"),
+                "max_tokens": gemini_request_dict.get("max_tokens"),
+                "stream": gemini_request_dict["stream"]
+            }
+            
+            if chat_request_data["model"].startswith("gemini/"):
+                chat_request_data["model"] = chat_request_data["model"].replace("gemini/", "")
 
-        chat_request = ChatRequest(**chat_request_data)
-        
-        litellm_kwargs = {}
-        if "tools" in gemini_request_dict:
-            litellm_kwargs["tools"] = gemini_request_dict["tools"]
-        if "tool_config" in gemini_request_dict:
-             litellm_kwargs["tool_choice"] = gemini_request_dict["tool_config"]["function_calling_config"]["mode"]
+            chat_request = ChatRequest(**chat_request_data)
+            
+            litellm_kwargs = {}
+            if "tools" in gemini_request_dict:
+                litellm_kwargs["tools"] = gemini_request_dict["tools"]
+            if "tool_config" in gemini_request_dict:
+                 litellm_kwargs["tool_choice"] = gemini_request_dict["tool_config"]["function_calling_config"]["mode"]
 
-        # =============================================================================
-        # MODIFICATION: Correctly handle the system prompt
-        # The previous method of injecting a "system" role message into the list
-        # caused conflicts with the Gemini API when tools were present.
-        # The correct method is to pass it as a separate `system_message` parameter,
-        # which LiteLLM will correctly translate for the target API.
-        # =============================================================================
-        if "system_instruction" in gemini_request_dict:
-            system_content = gemini_request_dict["system_instruction"]["parts"][0]["text"]
-            litellm_kwargs["system_message"] = system_content
+            if "system_instruction" in gemini_request_dict:
+                system_content = gemini_request_dict["system_instruction"]["parts"][0]["text"]
+                litellm_kwargs["system_message"] = system_content
 
-        # The chat_request.model_dump() call now correctly provides the original
-        # messages list, without the problematic system message.
-        litellm_kwargs.update(chat_request.model_dump())
+            litellm_kwargs.update(chat_request.model_dump())
+            
+            # Re-validate that messages exist in the final arguments
+            if not litellm_kwargs.get("messages"):
+                logger.error(f"Final litellm_kwargs has empty messages: {litellm_kwargs}")
+                raise HTTPException(status_code=400, detail="Final request has empty messages")
 
-        if request.stream:
-            gemini_stream = await self.chat_completion_with_litellm(litellm_kwargs)
-            streaming_generator = StreamingResponseGenerator(request, self.claude_code_simulator)
-            return streaming_generator.generate_sse_events(gemini_stream)
-        else:
-            gemini_response_model = await self.chat_completion_with_litellm(litellm_kwargs)
-            gemini_response_dict = gemini_response_model.model_dump()
-            return await self.gemini_to_anthropic.convert_response(gemini_response_dict, request)
+            if request.stream:
+                gemini_stream = await self.chat_completion_with_litellm(litellm_kwargs)
+                streaming_generator = StreamingResponseGenerator(request, self.claude_code_simulator)
+                return streaming_generator.generate_sse_events(gemini_stream)
+            else:
+                gemini_response_model = await self.chat_completion_with_litellm(litellm_kwargs)
+                gemini_response_dict = gemini_response_model.model_dump()
+                return await self.gemini_to_anthropic.convert_response(gemini_response_dict, request)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error in anthropic_messages_completion: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+    # =============================================================================
+    # FIX #3: Added detailed logging, validation, and error reporting.
+    # =============================================================================
     async def chat_completion_with_litellm(self, litellm_kwargs: Dict) -> Any:
         key_info = await self.key_manager.get_available_key()
         if not key_info:
             raise HTTPException(status_code=503, detail="No available API keys")
         
         litellm_kwargs["api_key"] = key_info.key
-        
         litellm_kwargs["model"] = f"gemini/{litellm_kwargs['model']}"
+        
+        # Add detailed request logging
+        logger.info(f"Calling LiteLLM with model: {litellm_kwargs['model']}")
+        logger.info(f"Messages count: {len(litellm_kwargs.get('messages', []))}")
+        # Use json.dumps for a cleaner log of the messages preview
+        messages_preview = litellm_kwargs.get('messages', [])
+        logger.info(f"Messages preview: {json.dumps(messages_preview[:2], indent=2) if messages_preview else 'EMPTY'}")
+        
+        # Validate message format before sending
+        messages = litellm_kwargs.get('messages', [])
+        if not messages:
+            raise HTTPException(status_code=400, detail="Messages list is empty in litellm_kwargs")
+        
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                raise HTTPException(status_code=400, detail=f"Message {i} is not a dict: {type(msg)}")
+            if 'role' not in msg:
+                raise HTTPException(status_code=400, detail=f"Message {i} missing 'role': {msg}")
+            if 'content' not in msg and 'parts' not in msg:
+                raise HTTPException(status_code=400, detail=f"Message {i} missing 'content' or 'parts': {msg}")
 
         try:
             start_time = time.time()
@@ -515,6 +566,9 @@ class LiteLLMAdapter:
             await self.key_manager.mark_key_failed(key_info.key, str(e))
             await self.key_manager.record_key_performance(key_info.key, response_time, False)
             logger.error(f"LiteLLM call failed with key {key_info.key[:8]}: {e}")
+            # Log the failed request arguments for easier debugging, masking the api_key
+            failed_kwargs = {k: v for k, v in litellm_kwargs.items() if k != 'api_key'}
+            logger.error(f"Failed request kwargs: {json.dumps(failed_kwargs, indent=2)}")
             raise HTTPException(status_code=502, detail=f"Model provider error: {e}")
 
 
