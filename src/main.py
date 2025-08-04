@@ -65,8 +65,11 @@ class ChatRequest(BaseModel):
         if not v:
             raise ValueError("Messages cannot be empty")
         for msg in v:
-            if not isinstance(msg, dict) or 'role' not in msg or ('content' not in msg and 'parts' not in msg):
-                raise ValueError("Each message must have 'role' and 'content' or 'parts' fields")
+            if not isinstance(msg, dict) or 'role' not in msg:
+                raise ValueError("Each message must have 'role' field")
+            # More flexible validation - allow either content or parts
+            if 'content' not in msg and 'parts' not in msg and 'text' not in msg:
+                logger.warning(f"Message may be missing content: {msg}")
         return v
 
 class SecurityConfig:
@@ -368,9 +371,33 @@ class LiteLLMAdapter:
                     if request_hash in self._request_deduplicator:
                         del self._request_deduplicator[request_hash]
     
-    # =============================================================================
-    # FIX #1: Added robust message validation within the try_key_request function.
-    # =============================================================================
+    def _safe_validate_messages(self, messages: List) -> bool:
+        """Safe message validation that doesn't raise exceptions"""
+        try:
+            if not messages:
+                logger.warning("Messages list is empty")
+                return False
+            
+            for i, msg in enumerate(messages):
+                if not isinstance(msg, dict):
+                    logger.warning(f"Message {i} is not a dict: {type(msg)}")
+                    return False
+                
+                if 'role' not in msg:
+                    logger.warning(f"Message {i} missing 'role': {msg}")
+                    return False
+                
+                # Check for any content field
+                has_content = any(field in msg for field in ['content', 'parts', 'text'])
+                if not has_content:
+                    logger.warning(f"Message {i} has no content field: {msg}")
+                    # Don't fail validation, just warn
+                    
+            return True
+        except Exception as e:
+            logger.error(f"Error validating messages: {e}")
+            return False
+
     async def _execute_chat_completion(self, request: ChatRequest) -> Union[Dict, Any]:
         last_error = "No active keys to attempt request."
         attempted_keys = set()
@@ -405,18 +432,9 @@ class LiteLLMAdapter:
                         "stream": request.stream,
                     }
                     
-                    # Ensure messages is not empty
-                    if not kwargs["messages"]:
-                        raise ValueError("Messages list is empty")
-                    
-                    # Validate each message has the required fields
-                    for msg in kwargs["messages"]:
-                        if not isinstance(msg, dict):
-                            raise ValueError(f"Invalid message format: {msg}")
-                        if "role" not in msg:
-                            raise ValueError(f"Message missing 'role' field: {msg}")
-                        if "content" not in msg and "parts" not in msg:
-                            raise ValueError(f"Message missing 'content' or 'parts' field: {msg}")
+                    # Safe validation
+                    if not self._safe_validate_messages(kwargs["messages"]):
+                        raise ValueError("Message validation failed")
                     
                     if request.max_tokens:
                         kwargs["max_tokens"] = request.max_tokens
@@ -467,18 +485,28 @@ class LiteLLMAdapter:
             
         raise HTTPException(status_code=502, detail=f"All attempted keys failed. Last error: {last_error}")
 
-    # =============================================================================
-    # FIX #2: Added message validation and a more robust error handling block.
-    # =============================================================================
     async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
         try:
+            # Log original request for debugging
+            logger.info(f"Original Anthropic request - Model: {request.model}, Messages: {len(request.messages)}")
+            logger.debug(f"Original messages preview: {json.dumps(request.model_dump().get('messages', [])[:2], indent=2)}")
+            
+            # Convert Anthropic request to Gemini format
             gemini_request_dict = self.anthropic_to_gemini.convert_request(request)
+            
+            # Log converted request
+            logger.info(f"Converted Gemini request - Model: {gemini_request_dict.get('model', 'N/A')}")
+            logger.info(f"Converted messages count: {len(gemini_request_dict.get('messages', []))}")
+            logger.debug(f"Converted messages preview: {json.dumps(gemini_request_dict.get('messages', [])[:2], indent=2)}")
             
             # Validate that messages exist after conversion
             if not gemini_request_dict.get("messages"):
-                logger.error(f"Empty messages after conversion. Original request: {request.messages}")
+                logger.error("Empty messages after conversion!")
+                logger.error(f"Original request: {request.model_dump()}")
+                logger.error(f"Converted request: {gemini_request_dict}")
                 raise HTTPException(status_code=400, detail="Messages cannot be empty after conversion")
             
+            # Create ChatRequest with proper validation
             chat_request_data = {
                 "messages": gemini_request_dict["messages"],
                 "model": gemini_request_dict["model"],
@@ -487,11 +515,14 @@ class LiteLLMAdapter:
                 "stream": gemini_request_dict["stream"]
             }
             
+            # Clean up model name
             if chat_request_data["model"].startswith("gemini/"):
                 chat_request_data["model"] = chat_request_data["model"].replace("gemini/", "")
 
+            logger.info(f"Creating ChatRequest with model: {chat_request_data['model']}")
             chat_request = ChatRequest(**chat_request_data)
             
+            # Prepare LiteLLM kwargs
             litellm_kwargs = {}
             if "tools" in gemini_request_dict:
                 litellm_kwargs["tools"] = gemini_request_dict["tools"]
@@ -504,10 +535,13 @@ class LiteLLMAdapter:
 
             litellm_kwargs.update(chat_request.model_dump())
             
-            # Re-validate that messages exist in the final arguments
+            # Final validation before calling LiteLLM
             if not litellm_kwargs.get("messages"):
-                logger.error(f"Final litellm_kwargs has empty messages: {litellm_kwargs}")
+                logger.error("Final litellm_kwargs has empty messages!")
+                logger.error(f"Final kwargs: {json.dumps({k: v for k, v in litellm_kwargs.items() if k != 'api_key'}, indent=2)}")
                 raise HTTPException(status_code=400, detail="Final request has empty messages")
+
+            logger.info(f"Calling LiteLLM with {len(litellm_kwargs['messages'])} messages")
 
             if request.stream:
                 gemini_stream = await self.chat_completion_with_litellm(litellm_kwargs)
@@ -523,9 +557,6 @@ class LiteLLMAdapter:
             logger.error(f"Error in anthropic_messages_completion: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-    # =============================================================================
-    # FIX #3: Added detailed logging, validation, and error reporting.
-    # =============================================================================
     async def chat_completion_with_litellm(self, litellm_kwargs: Dict) -> Any:
         key_info = await self.key_manager.get_available_key()
         if not key_info:
@@ -534,25 +565,14 @@ class LiteLLMAdapter:
         litellm_kwargs["api_key"] = key_info.key
         litellm_kwargs["model"] = f"gemini/{litellm_kwargs['model']}"
         
-        # Add detailed request logging
-        logger.info(f"Calling LiteLLM with model: {litellm_kwargs['model']}")
+        # Log request details
+        logger.info(f"LiteLLM call - Model: {litellm_kwargs['model']}, Key: {key_info.key[:8]}...")
         logger.info(f"Messages count: {len(litellm_kwargs.get('messages', []))}")
-        # Use json.dumps for a cleaner log of the messages preview
-        messages_preview = litellm_kwargs.get('messages', [])
-        logger.info(f"Messages preview: {json.dumps(messages_preview[:2], indent=2) if messages_preview else 'EMPTY'}")
         
-        # Validate message format before sending
+        # Safe validation
         messages = litellm_kwargs.get('messages', [])
-        if not messages:
-            raise HTTPException(status_code=400, detail="Messages list is empty in litellm_kwargs")
-        
-        for i, msg in enumerate(messages):
-            if not isinstance(msg, dict):
-                raise HTTPException(status_code=400, detail=f"Message {i} is not a dict: {type(msg)}")
-            if 'role' not in msg:
-                raise HTTPException(status_code=400, detail=f"Message {i} missing 'role': {msg}")
-            if 'content' not in msg and 'parts' not in msg:
-                raise HTTPException(status_code=400, detail=f"Message {i} missing 'content' or 'parts': {msg}")
+        if not self._safe_validate_messages(messages):
+            raise HTTPException(status_code=400, detail="Message validation failed")
 
         try:
             start_time = time.time()
@@ -830,3 +850,4 @@ async def global_exception_handler(request: Request, exc: Exception):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info", reload=True)
+
