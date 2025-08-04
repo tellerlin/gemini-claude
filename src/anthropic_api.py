@@ -125,6 +125,10 @@ class ClaudeCodeToolSimulator:
     async def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
         try:
             logger.info(f"🔧 TOOL CALL: {tool_name} with input: {tool_input}")
+            
+            if not isinstance(tool_input, dict):
+                return {"error": f"Invalid tool input format. Expected dict, got {type(tool_input)}"}
+
             tool_map = {
                 # Basic File Operations
                 "create_file": self._create_file,
@@ -172,7 +176,11 @@ class ClaudeCodeToolSimulator:
                 "curl": self._curl,
             }
             if tool_name in tool_map:
-                return await tool_map[tool_name](tool_input)
+                result = await tool_map[tool_name](tool_input)
+                if isinstance(result, dict):
+                    return result
+                else:
+                    return {"result": str(result)}
             else:
                 logger.warning(f"Unknown tool: {tool_name}")
                 return {"error": f"Unknown tool: {tool_name}"}
@@ -194,18 +202,34 @@ class ClaudeCodeToolSimulator:
 
     # ========== Basic File Operations ==========
     async def _create_file(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        path = input_data.get("path", "")
-        content = input_data.get("content", "")
-        if not path:
-            return {"error": "No file path provided"}
-        
-        full_path = self._resolve_path(path)
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        
-        with open(full_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        return {"success": True, "message": f"File created: {path}", "path": path}
+        try:
+            path = input_data.get("path", "")
+            content = input_data.get("content", "")
+            
+            if not path:
+                return {"error": "No file path provided"}
+            
+            # If no absolute path is provided, use the current working directory
+            if not os.path.isabs(path):
+                path = os.path.join(self.working_directory, path)
+
+            full_path = self._resolve_path(path)
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            
+            with open(full_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            logger.info(f"Created file: {path}")
+            return {
+                "success": True, 
+                "message": f"File created successfully: {path}", 
+                "path": path,
+                "absolute_path": full_path
+            }
+        except Exception as e:
+            logger.error(f"Error creating file: {e}")
+            return {"error": f"Failed to create file: {str(e)}"}
+
 
     async def _read_file(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         path = input_data.get("path", "")
@@ -618,17 +642,22 @@ class AnthropicToGeminiConverter:
                             }
                         })
                     elif block.type == "tool_result":
-                        # This part is crucial for tool execution feedback
+                        # FIXED: Use the correct format for function/tool responses
+                        # that LiteLLM can convert for Gemini.
+                        if isinstance(block.content, str):
+                            content_text = block.content
+                        else:
+                            content_text = json.dumps(block.content) if block.content is not None else ""
+                        
+                        # This structure is more aligned with what Gemini/LiteLLM expects for a tool response part.
+                        # It is placed inside a message from the 'assistant' or 'user' role that is providing the tool result.
                         parts.append({
-                            "tool_response": {
-                                "name": block.tool_use_id, # Gemini expects the ID here
-                                "response": {
-                                    "name": block.tool_use_id, # And here
-                                    "content": json.dumps(block.content) if not isinstance(block.content, str) else block.content,
-                                }
+                            "function_response": {
+                                "name": block.tool_use_id,
+                                "response": content_text
                             }
                         })
-            
+
             gemini_messages.append({"role": role, "parts": parts})
         
         converted = {
@@ -666,15 +695,13 @@ class GeminiToAnthropicConverter:
     async def convert_response(self, gemini_response: Dict[str, Any], original_request: MessagesRequest) -> MessagesResponse:
         """
         Converts a standardized (fixed) response from LiteLLM into an Anthropic MessagesResponse.
-        It reads from the 'choices' field, not the raw 'candidates' field.
+        If the response includes tool calls, it executes them and includes the results in the final response.
         """
         try:
-            # Read from the standardized 'choices' field
             choice = gemini_response['choices'][0]
             message = choice.get('message', {})
             finish_reason_str = choice.get('finish_reason', 'end_turn')
 
-            # Extract content and tool calls from the standardized message
             content_text = message.get('content')
             tool_calls = message.get('tool_calls')
 
@@ -684,8 +711,11 @@ class GeminiToAnthropicConverter:
             if content_text and isinstance(content_text, str):
                 anthropic_content.append(ContentBlockText(type="text", text=content_text))
 
+            # If there are tool calls, process and execute them.
             if tool_calls and isinstance(tool_calls, list):
                 stop_reason = "tool_use"
+                tool_use_blocks = []
+
                 for tool_call in tool_calls:
                     function = tool_call.get('function', {})
                     tool_use_id = tool_call.get('id', f"toolu_{uuid.uuid4().hex[:8]}")
@@ -693,32 +723,58 @@ class GeminiToAnthropicConverter:
                     tool_input_str = function.get('arguments', '{}')
                     
                     try:
-                        tool_input = json.loads(tool_input_str)
+                        tool_input = json.loads(tool_input_str) if tool_input_str else {}
                     except json.JSONDecodeError:
                         logger.warning(f"Failed to decode tool arguments: {tool_input_str}")
                         tool_input = {}
                     
                     if tool_name:
-                        anthropic_content.append(ContentBlockToolUse(
+                        tool_use_block = ContentBlockToolUse(
+                            type="tool_use",
                             id=tool_use_id,
                             name=tool_name,
                             input=tool_input
-                        ))
+                        )
+                        tool_use_blocks.append(tool_use_block)
+                
+                anthropic_content.extend(tool_use_blocks)
+                
+                # Execute the tools and add the results to the content
+                for tool_use_block in tool_use_blocks:
+                    try:
+                        tool_result_content = await self.claude_code_simulator.execute_tool(
+                            tool_use_block.name, tool_use_block.input
+                        )
+                        tool_result_block = ContentBlockToolResult(
+                            type="tool_result",
+                            tool_use_id=tool_use_block.id,
+                            content=tool_result_content
+                        )
+                        anthropic_content.append(tool_result_block)
 
-            # If no content was generated at all, add an empty text block as per Anthropic spec
+                    except Exception as e:
+                        logger.error(f"Tool execution failed for {tool_use_block.name}: {e}", exc_info=True)
+                        error_block = ContentBlockToolResult(
+                            type="tool_result",
+                            tool_use_id=tool_use_block.id,
+                            content={"error": f"Tool execution failed: {str(e)}"}
+                        )
+                        anthropic_content.append(error_block)
+                # After executing tools, the turn might be considered ended from the user's perspective,
+                # as the result is provided. Or it might be 'tool_use' if the model is expected to use the result.
+                # Let's stick with 'tool_use' to indicate what happened.
+                stop_reason = "tool_use"
+
             if not anthropic_content:
                 anthropic_content.append(ContentBlockText(text=""))
 
-            # Convert finish reason from OpenAI/LiteLLM standard to Anthropic standard
             if finish_reason_str == "max_tokens":
                 stop_reason = "max_tokens"
             elif finish_reason_str == "stop_sequence":
                 stop_reason = "stop_sequence"
-            # Keep "tool_use" if it was set by the logic above
             elif stop_reason != "tool_use":
                 stop_reason = "end_turn"
                 
-            # Use the standardized 'usage' object directly
             usage_data = gemini_response.get('usage', {})
             usage = Usage(
                 input_tokens=usage_data.get('prompt_tokens', 0),
@@ -759,15 +815,13 @@ class StreamingResponseGenerator:
             full_response_parts = []
             input_tokens = 0
             output_tokens = 0
-            current_tool_calls = []
+            current_tool_calls = {} # Use dict for safer index handling
 
             try:
                 async for chunk in gemini_stream:
-                    # The chunk should be in standardized OpenAI stream format
                     choice = chunk.get('choices', [{}])[0]
                     delta = choice.get('delta', {})
                     
-                    # Handle input token usage once
                     if 'usage' in chunk and chunk['usage'].get('prompt_tokens') and not input_tokens:
                         input_tokens = chunk['usage']['prompt_tokens']
                         yield self._create_event("message_delta", {"usage": {"input_tokens": input_tokens}})
@@ -775,44 +829,71 @@ class StreamingResponseGenerator:
                     if not delta:
                         continue
 
-                    # Handle text delta
                     if delta.get("content"):
                         yield self._start_content_block_if_needed(full_response_parts, "text")
                         delta_text = delta["content"]
                         yield self._create_event("content_block_delta", {"index": len(full_response_parts) - 1, "delta": {"type": "text_delta", "text": delta_text}})
                         self._update_full_response(full_response_parts, "text", delta_text)
                     
-                    # Handle tool call delta
                     if "tool_calls" in delta and delta["tool_calls"]:
                         yield self._stop_last_content_block_if_needed(full_response_parts)
+                        
                         for tool_call_chunk in delta["tool_calls"]:
-                            index = tool_call_chunk.get("index", len(current_tool_calls))
+                            index = tool_call_chunk.get("index", 0)
                             
-                            if index >= len(current_tool_calls):
-                                current_tool_calls.append({})
+                            if index not in current_tool_calls:
+                                current_tool_calls[index] = {}
+                            
+                            # Deep merge the chunk data
+                            if 'id' in tool_call_chunk:
+                                current_tool_calls[index]['id'] = tool_call_chunk['id']
+                            if 'type' in tool_call_chunk:
+                                current_tool_calls[index]['type'] = tool_call_chunk['type']
+                            if 'function' in tool_call_chunk:
+                                if 'function' not in current_tool_calls[index]:
+                                    current_tool_calls[index]['function'] = {}
+                                if 'name' in tool_call_chunk['function']:
+                                    current_tool_calls[index]['function']['name'] = tool_call_chunk['function']['name']
+                                if 'arguments' in tool_call_chunk['function']:
+                                    current_tool_calls[index]['function'].setdefault('arguments', '')
+                                    current_tool_calls[index]['function']['arguments'] += tool_call_chunk['function']['arguments']
 
-                            # Update the tool call with new chunk data
-                            current_tool_calls[index].update(tool_call_chunk)
+                            # Check if the tool call is complete and ready for execution
+                            tc = current_tool_calls[index]
+                            if 'id' in tc and 'function' in tc and 'name' in tc['function'] and 'arguments' in tc['function']:
+                                # A complete tool call has been received
+                                tool_use_id = tc['id']
+                                tool_name = tc['function']['name']
+                                try:
+                                    tool_input = json.loads(tc['function']['arguments'])
+                                except (json.JSONDecodeError, TypeError):
+                                    tool_input = {} # Handle empty or invalid JSON
 
-                            # If we have a complete tool call, yield it
-                            if 'id' in current_tool_calls[index] and 'function' in current_tool_calls[index] and 'name' in current_tool_calls[index]['function']:
-                                func = current_tool_calls[index]['function']
-                                if 'arguments' in func: # Wait for arguments to be complete
-                                    tool_use_content = ContentBlockToolUse(
-                                        id=current_tool_calls[index]['id'],
-                                        name=func['name'],
-                                        input=json.loads(func['arguments']) if func['arguments'] else {}
-                                    )
-                                    yield self._create_event("content_block_start", {"index": len(full_response_parts), "content_block": tool_use_content.model_dump()})
-                                    full_response_parts.append(tool_use_content)
-                                    yield self._create_event("content_block_stop", {"index": len(full_response_parts) - 1})
-                                    
-                    # Handle final chunk details
+                                # 1. Stream the tool_use block
+                                tool_use_content = ContentBlockToolUse(id=tool_use_id, name=tool_name, input=tool_input)
+                                yield self._create_event("content_block_start", {"index": len(full_response_parts), "content_block": tool_use_content.model_dump()})
+                                full_response_parts.append(tool_use_content)
+                                yield self._create_event("content_block_stop", {"index": len(full_response_parts) - 1})
+                                
+                                # 2. Execute the tool
+                                try:
+                                    tool_result_content = await self.claude_code_simulator.execute_tool(tool_name, tool_input)
+                                except Exception as e:
+                                    tool_result_content = {"error": f"Tool execution failed: {str(e)}"}
+
+                                # 3. Stream the tool_result block
+                                tool_result_block = ContentBlockToolResult(type="tool_result", tool_use_id=tool_use_id, content=tool_result_content)
+                                yield self._create_event("content_block_start", {"index": len(full_response_parts), "content_block": tool_result_block.model_dump()})
+                                full_response_parts.append(tool_result_block)
+                                yield self._create_event("content_block_stop", {"index": len(full_response_parts) - 1})
+
+                                # Reset for next tool call
+                                del current_tool_calls[index]
+
                     finish_reason = choice.get("finish_reason")
                     if finish_reason:
                         yield self._stop_last_content_block_if_needed(full_response_parts)
                         
-                        # Use the final usage data if available
                         if 'usage' in chunk and chunk['usage'].get('completion_tokens'):
                             output_tokens = chunk['usage']['completion_tokens']
                         
@@ -821,10 +902,9 @@ class StreamingResponseGenerator:
                             stop_reason = "max_tokens"
                         
                         yield self._create_event("message_delta", {"delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": output_tokens}})
-                        break # End stream after finish reason
+                        break
                         
             except StopAsyncIteration:
-                # Handle StopAsyncIteration properly
                 logger.debug("Stream completed normally")
             except Exception as e:
                 logger.error(f"Error processing stream: {e}", exc_info=True)
@@ -835,6 +915,7 @@ class StreamingResponseGenerator:
             yield self._create_event("error", {"error": {"message": str(e), "type": "critical_error"}})
         finally:
             yield self._create_event("message_stop", {})
+
 
     def _update_full_response(self, parts, type, text_delta):
         if parts and isinstance(parts[-1], ContentBlockText):
