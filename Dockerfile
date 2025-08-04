@@ -37,7 +37,7 @@ COPY --from=builder /root/.local /home/appuser/.local
 # Set the working directory
 WORKDIR /app
 
-# --- MODIFIED: Copy all source files from the build context root ---
+# --- CORRECTED: Copy all source files in a single, correct line ---
 # Copy the source code, chown to the non-root user
 COPY --chown=appuser:appuser . /app/
 
@@ -52,10 +52,9 @@ EXPOSE 8000
 
 # Fix Healthcheck to use a library that is guaranteed to be available (urllib)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10).read()" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10).read() || exit 1"
 
+# --- RESTORED: Use Gunicorn to run the application ---
 # Use Gunicorn with Uvicorn workers, and read the number of workers from the
 # SERVICE_WORKERS environment variable, defaulting to 1 if not set.
-# CMD gunicorn main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
-
-CMD ["python", "diagnose_script.py"]
+CMD gunicorn main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
