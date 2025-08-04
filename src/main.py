@@ -22,11 +22,7 @@ from collections import defaultdict, deque
 import hashlib
 import copy
 
-# --- MODIFIED: Imports adjusted for flat structure ---
-# 假设这些文件与 main.py 在同一目录
-# from config import get_config, AppConfig
-# from error_handling import error_monitor, monitor_errors, ErrorClassifier
-# import performance
+# 导入您本地的 anthropic_api.py 文件
 from anthropic_api import (
     MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
     AnthropicToGeminiConverter, GeminiToAnthropicConverter,
@@ -34,10 +30,11 @@ from anthropic_api import (
     AnthropicAPIConfig
 )
 
-# --- MOCK for standalone execution ---
+# --- MOCK AppConfig for standalone execution ---
+# 在实际部署中，您可能会从一个单独的 config.py 文件导入这些
 class AppConfig:
     SECURITY_ADAPTER_API_KEYS = os.getenv("SECURITY_ADAPTER_API_KEYS", "test-key").split(",")
-    SECURITY_ADMIN_API_KEYS = []
+    SECURITY_ADMIN_API_KEYS = os.getenv("SECURITY_ADMIN_API_KEYS", "").split(",")
     SECURITY_ENABLE_IP_BLOCKING = False
     SECURITY_MAX_FAILED_ATTEMPTS = 5
     SECURITY_BLOCK_DURATION = 300
@@ -47,33 +44,19 @@ class AppConfig:
     GEMINI_API_KEYS = os.getenv("GEMINI_API_KEYS", "your-gemini-key-1,your-gemini-key-2").split(",")
     GEMINI_COOLING_PERIOD = 300
     GEMINI_PROXY_URL = os.getenv("GEMINI_PROXY_URL", None)
-    GEMINI_REQUEST_TIMEOUT = 60
+    GEMINI_REQUEST_TIMEOUT = 120
     CACHE_ENABLED = False
     CACHE_MAX_SIZE = 100
     CACHE_TTL = 3600
     CACHE_KEY_PREFIX = "gemini_adapter"
     GEMINI_HEALTH_CHECK_INTERVAL = 60
+    MAX_RETRIES_PER_REQUEST = 3
 
 def get_config():
     return AppConfig()
-
-def monitor_errors(func):
-    return func
 # ---------------------------------
 
-
 load_dotenv()
-
-def safe_format_for_log(message: str, *args, **kwargs) -> str:
-    try:
-        if args or kwargs:
-            return message.format(*args, **kwargs)
-        else:
-            return message
-    except (ValueError, KeyError) as e:
-        safe_args = [repr(arg) for arg in args]
-        safe_kwargs = {k: repr(v) for k, v in kwargs.items()}
-        return f"{message} [FORMAT_ERROR: args={safe_args}, kwargs={safe_kwargs}]"
 
 class KeyStatus(Enum):
     ACTIVE = "active"
@@ -93,44 +76,18 @@ class APIKeyInfo:
 
 class ChatRequest(BaseModel):
     messages: List[Dict[str, Any]]
-    model: str = "gemini-1.5-pro-latest" # Updated default model
+    model: str = "gemini-1.5-pro-latest"
     temperature: Optional[float] = Field(default=0.1, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(default=0.95, ge=0.0, le=1.0)
     max_tokens: Optional[int] = Field(default=None, ge=1)
-    stop_sequences: Optional[List[str]] = Field(default=None, max_length=5)
     stream: bool = Field(default=False)
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[str] = None
 
-
-    @field_validator('messages')
-    @classmethod
-    def validate_messages(cls, v):
-        if not v:
-            raise ValueError("Messages cannot be empty")
-        for i, msg in enumerate(v):
-            if not isinstance(msg, dict) or 'role' not in msg:
-                raise ValueError(f"Message {i} must have 'role' field")
-            
-            # Content can be a string, a list (for multimodal), or absent (for tool calls)
-            content_present = 'content' in msg and msg['content'] is not None
-            tool_calls_present = 'tool_calls' in msg and msg['tool_calls'] is not None
-
-            if not content_present and not tool_calls_present:
-                 logger.warning(f"Message {i} has neither 'content' nor 'tool_calls'. This is unusual. Message: {msg}")
-
-        return v
-
 class SecurityConfig:
     def __init__(self, app_config: AppConfig):
-        self.valid_api_keys: Set[str] = set(app_config.SECURITY_ADAPTER_API_KEYS)
-        self.admin_keys: Set[str] = set(app_config.SECURITY_ADMIN_API_KEYS)
-        self.enable_ip_blocking = app_config.SECURITY_ENABLE_IP_BLOCKING
-        self.max_failed_attempts = app_config.SECURITY_MAX_FAILED_ATTEMPTS
-        self.block_duration = app_config.SECURITY_BLOCK_DURATION
-        self.enable_rate_limiting = app_config.SECURITY_ENABLE_RATE_LIMITING
-        self.rate_limit_requests = app_config.SECURITY_RATE_LIMIT_REQUESTS
-        self.rate_limit_window = app_config.SECURITY_RATE_LIMIT_WINDOW
+        self.valid_api_keys: Set[str] = {k for k in app_config.SECURITY_ADAPTER_API_KEYS if k}
+        self.admin_keys: Set[str] = {k for k in app_config.SECURITY_ADMIN_API_KEYS if k}
         self.security_enabled = bool(self.valid_api_keys)
         if self.security_enabled:
             logger.info(f"Security enabled with {len(self.valid_api_keys)} client keys")
@@ -139,7 +96,7 @@ class SecurityConfig:
         if self.admin_keys:
             logger.info(f"Admin access enabled with {len(self.admin_keys)} admin keys")
         else:
-            logger.info("No admin keys configured - client keys will have admin access")
+            logger.info("No admin keys configured")
 
 security_config: Optional[SecurityConfig] = None
 api_config: Optional[AnthropicAPIConfig] = None
@@ -161,35 +118,21 @@ async def verify_api_key(
         raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="API key required.")
     raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Invalid API key")
 
-async def verify_admin_key(
-    api_key: Optional[str] = Depends(api_key_header),
-    bearer_token: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)
-) -> str:
-    if not security_config or not security_config.admin_keys:
-        return await verify_api_key(api_key, bearer_token)
-    key_to_check = api_key or (bearer_token.credentials if bearer_token else None)
-    if key_to_check and key_to_check in security_config.admin_keys:
-        return key_to_check
-    if not key_to_check:
-        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Admin API key required")
-    raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Invalid admin API key")
-
 class GeminiKeyManager:
     def __init__(self, config: AppConfig):
         self.config = config
         self.keys: Dict[str, APIKeyInfo] = {}
         self.lock = asyncio.Lock()
-        self.last_key_used = None
-        self.key_performance = defaultdict(lambda: {"response_times": deque(maxlen=100), "errors": 0})
+        self.last_key_used: Optional[str] = None
 
         for key in config.GEMINI_API_KEYS:
             if key and key.strip():
                 self.keys[key] = APIKeyInfo(key=key)
 
         if not self.keys:
-            raise ValueError("No valid API keys provided to key manager")
+            raise ValueError("No valid GEMINI_API_KEYS provided to key manager")
 
-        logger.info(f"Initialized {len(self.keys)} API keys with performance tracking.")
+        logger.info(f"Initialized {len(self.keys)} Gemini API keys.")
 
     async def get_available_key(self) -> Optional[APIKeyInfo]:
         async with self.lock:
@@ -198,7 +141,16 @@ class GeminiKeyManager:
             if not active_keys:
                 logger.warning("No available API keys.")
                 return None
-            selected_key = self._select_best_key(active_keys)
+            
+            # Simple rotation: try not to use the last used key if others are available
+            if len(active_keys) > 1 and self.last_key_used:
+                other_keys = [k for k in active_keys if k.key != self.last_key_used]
+                if other_keys:
+                    selected_key = random.choice(other_keys)
+                    self.last_key_used = selected_key.key
+                    return selected_key
+
+            selected_key = random.choice(active_keys)
             self.last_key_used = selected_key.key
             return selected_key
 
@@ -220,12 +172,11 @@ class GeminiKeyManager:
     async def mark_key_failed(self, key: str, error: str):
         async with self.lock:
             key_info = self.keys.get(key)
-            if not key_info:
-                return
+            if not key_info: return
             error_type, cooling_time = self._classify_error(error)
             if error_type == 'PERMANENT':
                 key_info.status = KeyStatus.FAILED
-                logger.error(f"API key {key[:8]}... permanently failed due to {error_type}: {error}")
+                logger.error(f"API key {key[:8]}... permanently failed. Reason: {error_type}. Error: {error}")
                 return
             key_info.status = KeyStatus.COOLING
             key_info.failure_count += 1
@@ -237,35 +188,25 @@ class GeminiKeyManager:
         import re
         error_lower = error.lower()
         status_code = 0
-        status_patterns = [r'status code (\d{3})', r'HTTP (\d{3})', r'Error (\d{3})', r'(\d{3})']
+        status_patterns = [r'status code (\d{3})', r'http (\d{3})', r'error (\d{3})']
         for pattern in status_patterns:
-            match = re.search(pattern, error_lower)
+            match = re.search(pattern, error_lower, re.IGNORECASE)
             if match:
                 status_code = int(match.group(1))
                 break
-        
+
         permanent_patterns = ['invalid api key', 'api key not found', 'api key disabled', 'permission denied']
         if any(p in error_lower for p in permanent_patterns) or status_code in [401, 403]:
             return 'PERMANENT', -1
-        
+
         rate_limit_patterns = ['quota', 'rate limit', 'rate_limit', 'too many requests', 'resource exhausted']
         if any(p in error_lower for p in rate_limit_patterns) or status_code == 429:
-            return 'EXTENDED_COOLING', 1800 # 30 minutes
-            
+            return 'RATE_LIMIT', self.config.GEMINI_COOLING_PERIOD
+
         if status_code >= 500:
-            return 'SERVER_ERROR', 300 # 5 minutes
+            return 'SERVER_ERROR', 60
 
         return 'DEFAULT', self.config.GEMINI_COOLING_PERIOD
-
-    def _select_best_key(self, active_keys: List[APIKeyInfo]) -> APIKeyInfo:
-        return random.choice(active_keys)
-
-    async def record_key_performance(self, key: str, response_time: float, success: bool):
-        async with self.lock:
-            perf_data = self.key_performance[key]
-            perf_data["response_times"].append(response_time)
-            if not success:
-                perf_data["errors"] += 1
 
     async def mark_key_success(self, key: str):
         async with self.lock:
@@ -273,22 +214,22 @@ class GeminiKeyManager:
             if not key_info: return
             key_info.failure_count = 0
             key_info.last_success_time = time.time()
-            key_info.successful_requests += 1
+            if key_info.status == KeyStatus.ACTIVE:
+                key_info.successful_requests += 1
             key_info.total_requests += 1
 
     async def get_stats(self) -> Dict[str, Any]:
         async with self.lock:
-            #... (rest of the class is fine)
             return {
                 "total_keys": len(self.keys),
                 "active_keys": sum(1 for k in self.keys.values() if k.status == KeyStatus.ACTIVE),
                 "cooling_keys": sum(1 for k in self.keys.values() if k.status == KeyStatus.COOLING),
                 "failed_keys": sum(1 for k in self.keys.values() if k.status == KeyStatus.FAILED),
             }
+
     async def _check_and_recover_keys(self) -> int:
         async with self.lock:
             return await self._check_and_recover_keys_internal()
-
 
 class LiteLLMAdapter:
     def __init__(self, config: AppConfig, key_manager: GeminiKeyManager, api_config: AnthropicAPIConfig):
@@ -307,65 +248,10 @@ class LiteLLMAdapter:
         litellm.drop_params = True
         litellm.num_retries = 0
 
-    def _safe_validate_and_convert_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        FIXED: Validates and converts messages to a LiteLLM/OpenAI-compatible format
-        without destroying tool call structures.
-        """
-        converted_messages = []
-        for i, msg in enumerate(messages):
-            if not isinstance(msg, dict) or 'role' not in msg:
-                logger.warning(f"Skipping invalid message at index {i}: {msg}")
-                continue
-
-            # Standardize role: Gemini's 'model' -> 'assistant'
-            role = msg['role']
-            if role == 'model':
-                role = 'assistant'
-            
-            # If the message is a tool result from the user, it should be a 'tool' role message
-            if role == 'user' and 'content' in msg and isinstance(msg['content'], list):
-                 if any(item.get('type') == 'tool_result' for item in msg.get('content', [])):
-                     # This will be handled by the AnthropicToGeminiConverter, but we check here too
-                     pass # Let the converter handle this complex case
-
-            # If message is from assistant and contains tool_calls, it's a tool request
-            if role == 'assistant' and 'tool_calls' in msg and msg['tool_calls']:
-                converted_messages.append(msg) # Pass tool calls through directly
-                continue
-            
-            # For regular text messages, ensure 'content' is a string
-            content = msg.get('content')
-            final_content = ""
-            if isinstance(content, str):
-                final_content = content
-            elif isinstance(content, list):
-                # Handle multimodal or mixed content by extracting text
-                text_parts = [part['text'] for part in content if isinstance(part, dict) and part.get('type') == 'text']
-                final_content = "\n\n".join(text_parts)
-            
-            # Only add message if it has a valid role and some content, or is a tool message
-            if final_content or 'tool_calls' in msg or 'tool_call_id' in msg:
-                new_msg = {'role': role, 'content': final_content}
-                if 'tool_calls' in msg: new_msg['tool_calls'] = msg['tool_calls']
-                if 'tool_call_id' in msg: new_msg['tool_call_id'] = msg['tool_call_id']
-                converted_messages.append(new_msg)
-            else:
-                 logger.warning(f"Message {i} resulted in empty content and was skipped: {msg}")
-
-        return converted_messages
-
     async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
         try:
-            logger.info(f"Original Anthropic request - Model: {request.model}, Messages: {len(request.messages)}")
-            
             gemini_request_dict = self.anthropic_to_gemini.convert_request(request)
             
-            logger.info(f"Converted Gemini request - Model: {gemini_request_dict.get('model')}, Messages: {len(gemini_request_dict.get('messages', []))}")
-            if not gemini_request_dict.get("messages"):
-                raise HTTPException(status_code=400, detail="Messages list empty after conversion")
-
-            # The converted messages are already in OpenAI format, so we create the ChatRequest
             chat_request = ChatRequest(
                 model=gemini_request_dict.pop("model"),
                 messages=gemini_request_dict.pop("messages"),
@@ -378,7 +264,6 @@ class LiteLLMAdapter:
 
             if request.stream:
                 gemini_stream = await self.chat_completion_with_litellm(chat_request)
-                # The GeminiToAnthropic converter now handles streaming responses
                 return self.gemini_to_anthropic.convert_stream_response(gemini_stream, request)
             else:
                 gemini_response_model = await self.chat_completion_with_litellm(chat_request)
@@ -388,46 +273,53 @@ class LiteLLMAdapter:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error in anthropic_messages_completion: {repr(e)}", exc_info=True)
+            logger.error(f"Critical error in anthropic_messages_completion: {repr(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
     async def chat_completion_with_litellm(self, chat_request: ChatRequest) -> Any:
-        key_info = await self.key_manager.get_available_key()
-        if not key_info:
-            raise HTTPException(status_code=503, detail="No available API keys")
+        last_error = None
         
-        # Prepare kwargs for LiteLLM from the Pydantic model
-        litellm_kwargs = chat_request.model_dump(exclude_none=True)
-        litellm_kwargs["api_key"] = key_info.key
+        max_attempts = min(self.config.MAX_RETRIES_PER_REQUEST, len(self.key_manager.keys))
         
-        # LiteLLM expects the provider prefix in the model name
-        litellm_kwargs["model"] = f"gemini/{chat_request.model}"
+        for attempt in range(max_attempts):
+            key_info = await self.key_manager.get_available_key()
+            if not key_info:
+                logger.warning("No available API keys to attempt/retry request.")
+                break 
 
-        logger.info(f"LiteLLM call - Model: {litellm_kwargs['model']}, Key: {key_info.key[:8]}...")
-        logger.debug(f"LiteLLM kwargs: {json.dumps({k:v for k,v in litellm_kwargs.items() if k != 'api_key' and k != 'messages'}, indent=2)}")
-
-        try:
-            start_time = time.time()
-            response = await litellm.acompletion(**litellm_kwargs)
-            response_time = time.time() - start_time
-            await self.key_manager.mark_key_success(key_info.key)
-            await self.key_manager.record_key_performance(key_info.key, response_time, True)
-            return response
+            logger.info(f"Attempt {attempt + 1}/{max_attempts} using key {key_info.key[:8]}...")
             
-        except Exception as e:
-            response_time = time.time() - start_time
-            await self.key_manager.mark_key_failed(key_info.key, str(e))
-            await self.key_manager.record_key_performance(key_info.key, response_time, False)
-            logger.error(f"LiteLLM call failed with key {key_info.key[:8]}: {e}", exc_info=True)
-            raise HTTPException(status_code=502, detail=f"Model provider error: {e}")
+            litellm_kwargs = chat_request.model_dump(exclude_none=True)
+            litellm_kwargs["api_key"] = key_info.key
+            litellm_kwargs["model"] = f"gemini/{chat_request.model}"
+            litellm_kwargs["timeout"] = self.config.GEMINI_REQUEST_TIMEOUT
+
+            try:
+                start_time = time.time()
+                response = await litellm.acompletion(**litellm_kwargs)
+                response_time = time.time() - start_time
+                
+                await self.key_manager.mark_key_success(key_info.key)
+                logger.info(f"Key {key_info.key[:8]}... succeeded in {response_time:.2f}s.")
+                return response
+            
+            except Exception as e:
+                last_error = e
+                await self.key_manager.mark_key_failed(key_info.key, str(e))
+                logger.warning(f"Attempt {attempt + 1} failed with key {key_info.key[:8]}. Error: {repr(e)}")
+                await asyncio.sleep(0.5)
+
+        error_detail = f"All API keys failed after {max_attempts} attempts. Last error: {repr(last_error)}"
+        logger.error(error_detail)
+        raise HTTPException(status_code=502, detail=error_detail)
+
 
 key_manager: Optional[GeminiKeyManager] = None
 adapter: Optional[LiteLLMAdapter] = None
-rate_limiter = None # Simplified
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global key_manager, adapter, security_config, api_config, rate_limiter
+    global key_manager, adapter, security_config, api_config
     
     os.makedirs("logs", exist_ok=True)
     logger.add("logs/gemini_adapter_{time}.log", rotation="1 day", retention="7 days", level="INFO", enqueue=True, catch=True)
@@ -436,16 +328,18 @@ async def lifespan(app: FastAPI):
         security_config = SecurityConfig(app_config)
         
         working_dir = os.getenv("CLAUDE_CODE_WORKING_DIR", ".")
-        # We pass the simulator to the config, so it's created once
         api_config = AnthropicAPIConfig(working_directory=working_dir)
-        
-        logger.info(f"Claude Code support enabled. Working directory: {api_config.working_directory}")
         
         key_manager = GeminiKeyManager(app_config)
         adapter = LiteLLMAdapter(app_config, key_manager, api_config)
         
-        health_task = asyncio.create_task(key_manager._check_and_recover_keys())
-        logger.info("Gemini Claude Adapter started successfully.")
+        async def health_check_task():
+            while True:
+                await asyncio.sleep(app_config.GEMINI_HEALTH_CHECK_INTERVAL)
+                await key_manager._check_and_recover_keys()
+
+        health_task = asyncio.create_task(health_check_task())
+        logger.info("Gemini Claude Adapter (with retry logic) started successfully.")
         yield
     except Exception as e:
         logger.critical(f"Failed to start application: {e}", exc_info=True)
@@ -455,15 +349,16 @@ async def lifespan(app: FastAPI):
             health_task.cancel()
         logger.info("Gemini Claude Adapter shutting down.")
 
+
 app = FastAPI(
-    title="Gemini Claude Adapter (Fixed)",
-    description="Adapter with Anthropic API compatibility and corrected Claude Code support.",
-    version="2.2.0-fixed",
+    title="Gemini Claude Adapter (Fixed with Retry)",
+    description="Adapter with Anthropic API compatibility and automatic key rotation on failure.",
+    version="2.4.0-complete",
     lifespan=lifespan
 )
 
 @app.post("/v1/messages")
-async def create_message(request: MessagesRequest, raw_request: Request):
+async def create_message(request: MessagesRequest, raw_request: Request, client_key: str = Depends(verify_api_key)):
     if not adapter:
         raise HTTPException(status_code=503, detail="Service not initialized")
     try:
@@ -474,7 +369,6 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             gemini_model=gemini_model, num_messages=len(request.messages), 
             num_tools=len(request.tools) if request.tools else 0
         )
-
         response = await adapter.anthropic_messages_completion(request)
         if request.stream:
             return StreamingResponse(response, media_type="text/event-stream")
@@ -483,16 +377,15 @@ async def create_message(request: MessagesRequest, raw_request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in /v1/messages: {repr(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Unhandled error in /v1/messages endpoint: {repr(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An unexpected internal server error occurred.")
 
-# --- Simplified other endpoints for brevity ---
 @app.get("/", include_in_schema=False)
 async def root():
-    return {"name": "Gemini Claude Adapter", "version": "2.2.0-fixed", "status": "running"}
+    return {"name": "Gemini Claude Adapter", "version": "2.4.0-complete", "status": "running"}
 
 @app.get("/health")
-async def health_check():
+async def health_check(client_key: str = Depends(verify_api_key)):
     if not key_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
     stats = await key_manager.get_stats()
@@ -501,6 +394,8 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    # Make sure to set environment variables for GEMINI_API_KEYS
-    # e.g., export GEMINI_API_KEYS="your_key_here"
+    # 确保设置了环境变量 GEMINI_API_KEYS
+    # 例如: export GEMINI_API_KEYS=your_key_1,your_key_2
+    # 同时可以设置 SECURITY_ADAPTER_API_KEYS 来保护你的适配器
+    # 例如: export SECURITY_ADAPTER_API_KEYS="a_secret_key_for_claude_code"
     uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info", reload=True)

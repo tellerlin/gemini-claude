@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pydantic import BaseModel, Field, field_validator
 import logging
+from fastapi import HTTPException # 导入 HTTPException
 
 # Configure logger
 logging.basicConfig(level=logging.INFO)
@@ -58,7 +59,7 @@ class ContentBlockToolUse(BaseModel):
 class ContentBlockToolResult(BaseModel):
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
-    content: Union[str, List[Dict[str, Any]]] # Simplified content
+    content: Union[str, List[Dict[str, Any]]]
 
 class SystemContent(BaseModel):
     type: Literal["text"] = "text"
@@ -91,7 +92,7 @@ class MessagesResponse(BaseModel):
     id: str
     model: str
     role: Literal["assistant"] = "assistant"
-    content: List[Union[ContentBlockText, ContentBlockToolUse]] # Result is not returned here
+    content: List[Union[ContentBlockText, ContentBlockToolUse]]
     type: Literal["message"] = "message"
     stop_reason: Optional[Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]] = None
     stop_sequence: Optional[str] = None
@@ -106,7 +107,7 @@ class TokenCountRequest(BaseModel):
 class TokenCountResponse(BaseModel):
     input_tokens: int
 
-# ========== Claude Code Tool Simulator (No changes needed here) ==========
+# ========== Claude Code Tool Simulator (No changes) ==========
 class ClaudeCodeToolSimulator:
     def __init__(self, working_directory: str = "."):
         self.working_directory = os.path.abspath(working_directory)
@@ -115,9 +116,6 @@ class ClaudeCodeToolSimulator:
 
     async def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"🔧 TOOL CALL (SIMULATED): {tool_name} with input: {tool_input}")
-        # The actual execution logic is now on the client side.
-        # This class can be kept for testing or future use.
-        # For now, we'll assume the client handles execution.
         if tool_name == 'create_file':
             filename = tool_input.get('filename') or tool_input.get('path')
             if not filename:
@@ -131,7 +129,7 @@ class ClaudeCodeToolSimulator:
                 return {"error": str(e)}
         return {"error": f"Tool '{tool_name}' execution is simulated and not implemented in the adapter."}
 
-# ========== Conversion Classes (HEAVILY MODIFIED) ==========
+# ========== Conversion Classes (Minor bug fix) ==========
 class ToolConverter:
     def convert_tools_to_openai(self, tools: List[Tool]) -> List[Dict[str, Any]]:
         openai_tools = []
@@ -149,7 +147,7 @@ class ToolConverter:
     def convert_tool_choice_to_openai(self, tool_choice: Dict[str, Any]) -> str:
         choice_type = tool_choice.get("type", "auto").lower()
         if choice_type == "any" or choice_type == "tool":
-            return "required" # In new OpenAI spec, "required" forces a tool call
+            return "required"
         return "auto"
 
 class AnthropicToGeminiConverter:
@@ -167,12 +165,9 @@ class AnthropicToGeminiConverter:
 
     def convert_request(self, request: MessagesRequest) -> Dict[str, Any]:
         gemini_model = self.convert_model(request.model)
-        
-        # Convert messages to OpenAI format, which LiteLLM understands
         openai_messages = []
         for msg in request.messages:
             if msg.role == "user":
-                # Check if it's a tool result message
                 if isinstance(msg.content, list) and any(block.type == 'tool_result' for block in msg.content):
                     for block in msg.content:
                         if block.type == 'tool_result':
@@ -181,7 +176,7 @@ class AnthropicToGeminiConverter:
                                 "tool_call_id": block.tool_use_id,
                                 "content": json.dumps(block.content) if not isinstance(block.content, str) else block.content,
                             })
-                else: # Regular user message
+                else:
                     text_content = ""
                     if isinstance(msg.content, str):
                         text_content = msg.content
@@ -207,13 +202,11 @@ class AnthropicToGeminiConverter:
                             })
                 elif isinstance(msg.content, str):
                     text_content = msg.content
-
                 assistant_msg = {"role": "assistant"}
                 if text_content:
                     assistant_msg["content"] = text_content
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
-                # Add message only if it has content or tool calls
                 if "content" in assistant_msg or "tool_calls" in assistant_msg:
                     openai_messages.append(assistant_msg)
 
@@ -224,8 +217,6 @@ class AnthropicToGeminiConverter:
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
         }
-        
-        # Handle system prompt
         system_text = ""
         if request.system:
             if isinstance(request.system, str):
@@ -233,9 +224,7 @@ class AnthropicToGeminiConverter:
             elif isinstance(request.system, list):
                 system_text = "\n".join([c.text for c in request.system])
         if system_text:
-            # Prepend system message as the first message in the list for LiteLLM
             converted["messages"].insert(0, {"role": "system", "content": system_text})
-        
         if request.tools:
             converted["tools"] = self.tool_converter.convert_tools_to_openai(request.tools)
             if request.tool_choice:
@@ -245,14 +234,20 @@ class AnthropicToGeminiConverter:
 
 class GeminiToAnthropicConverter:
     def __init__(self):
-        # The simulator is no longer needed here as execution is on the client side
         pass
 
     def convert_response(self, gemini_response: Dict[str, Any], original_request: MessagesRequest) -> MessagesResponse:
         """
         Converts a non-streaming LiteLLM/OpenAI response to an Anthropic MessagesResponse.
-        FIXED: Does NOT execute tools. It returns a tool_use request to the client.
+        Includes a check to handle error responses from LiteLLM gracefully.
         """
+        # Check if the response from LiteLLM is actually an error object
+        if not gemini_response.get("choices"):
+            error_content = gemini_response.get("error", "Unknown error from model provider.")
+            logger.error(f"Received an error response from LiteLLM instead of a valid completion: {error_content}")
+            # Raise a standard HTTPException that our main handler can process
+            raise HTTPException(status_code=502, detail=f"Model Provider Error: {error_content}")
+            
         try:
             choice = gemini_response['choices'][0]
             message = choice.get('message', {})
@@ -261,11 +256,9 @@ class GeminiToAnthropicConverter:
             anthropic_content = []
             stop_reason: Literal["end_turn", "max_tokens", "tool_use"] = "end_turn"
             
-            # 1. Add text content if it exists
             if message.get('content'):
                 anthropic_content.append(ContentBlockText(text=message['content']))
 
-            # 2. Add tool calls if they exist
             if message.get('tool_calls'):
                 stop_reason = "tool_use"
                 for tool_call in message['tool_calls']:
@@ -273,7 +266,7 @@ class GeminiToAnthropicConverter:
                     try:
                         arguments = json.loads(function.get('arguments', '{}'))
                     except json.JSONDecodeError:
-                        arguments = {} # Default to empty dict on failure
+                        arguments = {}
                     
                     anthropic_content.append(ContentBlockToolUse(
                         id=tool_call['id'],
@@ -281,16 +274,14 @@ class GeminiToAnthropicConverter:
                         input=arguments
                     ))
             
-            # If after all that, content is empty, add an empty text block
             if not anthropic_content:
                 anthropic_content.append(ContentBlockText(text=""))
             
-            # Determine final stop reason
             if finish_reason == "tool_calls":
                 stop_reason = "tool_use"
             elif finish_reason == "max_tokens":
                 stop_reason = "max_tokens"
-            elif stop_reason != "tool_use": # Don't override tool_use
+            elif stop_reason != "tool_use":
                 stop_reason = "end_turn"
 
             usage_data = gemini_response.get('usage', {})
@@ -312,17 +303,11 @@ class GeminiToAnthropicConverter:
             raise HTTPException(status_code=500, detail=f"Failed to convert model response: {e}")
 
     async def convert_stream_response(self, gemini_stream: AsyncGenerator[Dict, None], original_request: MessagesRequest) -> AsyncGenerator[str, None]:
-        """
-        NEW: Handles streaming responses, converting LiteLLM/OpenAI stream chunks
-        to Anthropic Server-Sent Events (SSE).
-        """
         message_id = f"msg_{uuid.uuid4().hex}"
-        
-        # 1. Send message_start event
         yield self._create_sse_event("message_start", {"message": {
             "id": message_id, "type": "message", "role": "assistant",
             "model": original_request.model, "content": [], "stop_reason": None,
-            "usage": {"input_tokens": 0, "output_tokens": 0} # Placeholder
+            "usage": {"input_tokens": 0, "output_tokens": 0}
         }})
 
         content_blocks = []
@@ -335,66 +320,53 @@ class GeminiToAnthropicConverter:
                 if not chunk.choices: continue
                 delta = chunk.choices[0].delta
                 
-                # Capture usage info from the first chunk
-                if chunk.usage and not input_tokens:
-                    input_tokens = chunk.usage.prompt_tokens or 0
-                    yield self._create_sse_event("message_delta", {"usage": {"input_tokens": input_tokens}})
+                if hasattr(chunk, 'usage') and chunk.usage and not input_tokens:
+                    if chunk.usage.prompt_tokens:
+                        input_tokens = chunk.usage.prompt_tokens or 0
+                        yield self._create_sse_event("message_delta", {"usage": {"input_tokens": input_tokens}})
 
-                # Handle text delta
                 if delta.content:
                     if not content_blocks or not isinstance(content_blocks[-1], ContentBlockText):
-                        # Start a new text block
                         new_block = ContentBlockText(text="")
                         content_blocks.append(new_block)
                         yield self._create_sse_event("content_block_start", {"index": len(content_blocks) - 1, "content_block": {"type": "text", "text": ""}})
-                    
-                    # Send delta
                     yield self._create_sse_event("content_block_delta", {"index": len(content_blocks) - 1, "delta": {"type": "text_delta", "text": delta.content}})
-                    content_blocks[-1].text += delta.content
+                    if content_blocks: content_blocks[-1].text += delta.content
 
-                # Handle tool call delta
                 if delta.tool_calls:
                     final_stop_reason = "tool_use"
                     for tool_call_chunk in delta.tool_calls:
                         index = tool_call_chunk.index
-                        # Ensure content_blocks has space
                         while len(content_blocks) <= index:
                             content_blocks.append(None)
                         
                         if content_blocks[index] is None:
-                            # This is the start of a new tool call
                             tool_id = tool_call_chunk.id
                             tool_name = tool_call_chunk.function.name
                             new_block = ContentBlockToolUse(id=tool_id, name=tool_name, input={})
                             content_blocks[index] = new_block
                             yield self._create_sse_event("content_block_start", {"index": index, "content_block": new_block.model_dump()})
-                            # Append empty arguments for delta streaming
                             yield self._create_sse_event("content_block_delta", {"index": index, "delta": {"type": "input_json_delta", "partial_json": ""}})
                         
-                        # Stream argument deltas
                         if tool_call_chunk.function.arguments:
                             yield self._create_sse_event("content_block_delta", {"index": index, "delta": {"type": "input_json_delta", "partial_json": tool_call_chunk.function.arguments}})
 
-                # Handle finish reason
                 if chunk.choices[0].finish_reason:
-                    # Stop any open blocks
                     for i, block in enumerate(content_blocks):
-                        if block: # Could be None if there was an error
+                        if block:
                             yield self._create_sse_event("content_block_stop", {"index": i})
-                    
                     final_finish_reason = chunk.choices[0].finish_reason
                     if final_finish_reason == "tool_calls":
                         final_stop_reason = "tool_use"
                     elif final_finish_reason == "length":
                         final_stop_reason = "max_tokens"
                     
-                    if chunk.usage:
+                    if hasattr(chunk, 'usage') and chunk.usage and chunk.usage.completion_tokens:
                         output_tokens = chunk.usage.completion_tokens or 0
                     
                     yield self._create_sse_event("message_delta", {"delta": {"stop_reason": final_stop_reason, "stop_sequence": None}, "usage": {"output_tokens": output_tokens}})
-                    break # End of stream
+                    break
         finally:
-            # 2. Send message_stop event
             yield self._create_sse_event("message_stop", {})
 
     def _create_sse_event(self, event_type: str, data: Dict) -> str:
