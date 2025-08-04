@@ -30,7 +30,7 @@ import copy
 from anthropic_api import (
     MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse,
     AnthropicToGeminiConverter, GeminiToAnthropicConverter,
-    StreamingResponseGenerator, ToolConverter, log_request_beautifully,
+    ToolConverter, log_request_beautifully,
     AnthropicAPIConfig
 )
 
