@@ -423,7 +423,7 @@ class LiteLLMAdapter:
                     await self.key_manager.record_key_performance(key_info.key, response_time, False)
                     raise e
         
-        active_keys = [k for k in self.key_manager.keys.values() if k.status == KeyStatus.ACTIVE]
+        active_keys = [k for k in self.keys.values() if k.status == KeyStatus.ACTIVE]
         if not active_keys:
             raise HTTPException(status_code=503, detail="No available API keys")
         
@@ -476,8 +476,16 @@ class LiteLLMAdapter:
         if "tool_config" in gemini_request_dict:
              litellm_kwargs["tool_choice"] = gemini_request_dict["tool_config"]["function_calling_config"]["mode"]
 
+        # =============================================================================
+        # MODIFICATION: Correctly handle the system prompt
+        # The previous method of injecting a "system" role message into the list
+        # caused conflicts with the Gemini API when tools were present.
+        # The correct method is to pass it as a separate `system_message` parameter,
+        # which LiteLLM will correctly translate for the target API.
+        # =============================================================================
         if "system_instruction" in gemini_request_dict:
-            chat_request.messages.insert(0, {"role": "system", "content": gemini_request_dict["system_instruction"]["parts"][0]["text"]})
+            system_content = gemini_request_dict["system_instruction"]["parts"][0]["text"]
+            litellm_kwargs["system_message"] = system_content
 
         if request.stream:
             litellm_kwargs.update(chat_request.model_dump())
