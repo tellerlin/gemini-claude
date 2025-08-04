@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from collections import defaultdict, deque
 import hashlib
+import copy
 
 # --- MODIFIED: Imports adjusted for flat structure ---
 from config import get_config, AppConfig
@@ -389,7 +390,7 @@ class LiteLLMAdapter:
                         del self._request_deduplicator[request_hash]
     
     def _safe_validate_messages(self, messages: List) -> bool:
-        """Safe message validation that doesn't raise exceptions"""
+        """Safe message validation that also converts parts to content."""
         try:
             if not messages:
                 logger.warning("Messages list is empty")
@@ -404,29 +405,30 @@ class LiteLLMAdapter:
                     logger.warning(f"Message {i} missing 'role': {msg}")
                     return False
                 
-                # Enhanced content validation to handle Claude Code format
                 has_content = False
                 
-                # Check for simple content field
                 if 'content' in msg and msg['content']:
                     has_content = True
                 
-                # Check for parts array (Claude Code format)
                 elif 'parts' in msg and isinstance(msg['parts'], list) and len(msg['parts']) > 0:
-                    # Validate that parts contain actual content
+                    text_parts = []
                     for part in msg['parts']:
                         if isinstance(part, dict) and 'text' in part and part['text'].strip():
-                            has_content = True
-                            break
-                
-                # Check for direct text field
+                            text_parts.append(part['text'])
+                    
+                    if text_parts:
+                        msg['content'] = '\n\n'.join(text_parts)
+                        has_content = True
+                        logger.debug(f"Converted parts to content for message {i}: {len(text_parts)} parts combined")
+
                 elif 'text' in msg and msg['text']:
                     has_content = True
+                    if 'content' not in msg:
+                        msg['content'] = msg['text']
+                        logger.debug(f"Converted text to content for message {i}")
                 
                 if not has_content:
                     logger.warning(f"Message {i} has no valid content: {msg}")
-                    # Don't fail validation for empty content, just warn
-                    # Some messages might be system messages or have other purposes
                     
             return True
         except Exception as e:
@@ -459,17 +461,20 @@ class LiteLLMAdapter:
                 attempted_keys.add(key_info.key)
                 start_time = time.time()
                 try:
+                    messages_copy = copy.deepcopy(request.messages)
+                    
                     kwargs = {
                         "model": f"gemini/{request.model}", 
-                        "messages": request.messages,
+                        "messages": messages_copy,
                         "api_key": key_info.key, 
                         "temperature": request.temperature,
                         "stream": request.stream,
                     }
                     
-                    # Safe validation
                     if not self._safe_validate_messages(kwargs["messages"]):
                         raise ValueError("Message validation failed")
+                    
+                    logger.debug(f"Final messages being sent to LiteLLM: {json.dumps(kwargs['messages'][:2], indent=2)}")
                     
                     if request.max_tokens:
                         kwargs["max_tokens"] = request.max_tokens
@@ -522,26 +527,21 @@ class LiteLLMAdapter:
 
     async def anthropic_messages_completion(self, request: MessagesRequest) -> Union[MessagesResponse, AsyncGenerator[str, None]]:
         try:
-            # Log original request for debugging
             logger.info(f"Original Anthropic request - Model: {request.model}, Messages: {len(request.messages)}")
             logger.debug(f"Original messages preview: {json.dumps(request.model_dump().get('messages', [])[:2], indent=2)}")
             
-            # Convert Anthropic request to Gemini format
             gemini_request_dict = self.anthropic_to_gemini.convert_request(request)
             
-            # Log converted request
             logger.info(f"Converted Gemini request - Model: {gemini_request_dict.get('model', 'N/A')}")
             logger.info(f"Converted messages count: {len(gemini_request_dict.get('messages', []))}")
             logger.debug(f"Converted messages preview: {json.dumps(gemini_request_dict.get('messages', [])[:2], indent=2)}")
             
-            # Validate that messages exist after conversion
             if not gemini_request_dict.get("messages"):
                 logger.error("Empty messages after conversion!")
                 logger.error(f"Original request: {request.model_dump()}")
                 logger.error(f"Converted request: {gemini_request_dict}")
                 raise HTTPException(status_code=400, detail="Messages cannot be empty after conversion")
             
-            # Create ChatRequest with proper validation
             chat_request_data = {
                 "messages": gemini_request_dict["messages"],
                 "model": gemini_request_dict["model"],
@@ -550,14 +550,12 @@ class LiteLLMAdapter:
                 "stream": gemini_request_dict["stream"]
             }
             
-            # Clean up model name
             if chat_request_data["model"].startswith("gemini/"):
                 chat_request_data["model"] = chat_request_data["model"].replace("gemini/", "")
 
             logger.info(f"Creating ChatRequest with model: {chat_request_data['model']}")
             chat_request = ChatRequest(**chat_request_data)
             
-            # Prepare LiteLLM kwargs
             litellm_kwargs = {}
             if "tools" in gemini_request_dict:
                 litellm_kwargs["tools"] = gemini_request_dict["tools"]
@@ -570,7 +568,6 @@ class LiteLLMAdapter:
 
             litellm_kwargs.update(chat_request.model_dump())
             
-            # Final validation before calling LiteLLM
             if not litellm_kwargs.get("messages"):
                 logger.error("Final litellm_kwargs has empty messages!")
                 logger.error(f"Final kwargs: {json.dumps({k: v for k, v in litellm_kwargs.items() if k != 'api_key'}, indent=2)}")
@@ -600,14 +597,21 @@ class LiteLLMAdapter:
         litellm_kwargs["api_key"] = key_info.key
         litellm_kwargs["model"] = f"gemini/{litellm_kwargs['model']}"
         
-        # Log request details
         logger.info(f"LiteLLM call - Model: {litellm_kwargs['model']}, Key: {key_info.key[:8]}...")
         logger.info(f"Messages count: {len(litellm_kwargs.get('messages', []))}")
         
-        # Safe validation
-        messages = litellm_kwargs.get('messages', [])
-        if not self._safe_validate_messages(messages):
+        messages_copy = copy.deepcopy(litellm_kwargs.get('messages', []))
+        
+        if not self._safe_validate_messages(messages_copy):
             raise HTTPException(status_code=400, detail="Message validation failed")
+        
+        litellm_kwargs['messages'] = messages_copy
+        
+        if not litellm_kwargs.get('messages'):
+            logger.error("Empty messages after processing!")
+            raise HTTPException(status_code=400, detail="Messages cannot be empty")
+        
+        logger.debug(f"Final processed messages for LiteLLM: {json.dumps(litellm_kwargs['messages'][:2], indent=2)}")
 
         try:
             start_time = time.time()
@@ -621,7 +625,6 @@ class LiteLLMAdapter:
             await self.key_manager.mark_key_failed(key_info.key, str(e))
             await self.key_manager.record_key_performance(key_info.key, response_time, False)
             logger.error(f"LiteLLM call failed with key {key_info.key[:8]}: {e}")
-            # Log the failed request arguments for easier debugging, masking the api_key
             failed_kwargs = {k: v for k, v in litellm_kwargs.items() if k != 'api_key'}
             logger.error(f"Failed request kwargs: {json.dumps(failed_kwargs, indent=2)}")
             raise HTTPException(status_code=502, detail=f"Model provider error: {e}")
@@ -884,5 +887,4 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info", reload=True)
-
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info", reload=Tr
