@@ -597,7 +597,9 @@ class AnthropicToGeminiConverter:
         gemini_messages = []
         
         for msg in request.messages:
-            role = "user" if msg.role == "user" else "model"
+            # FIX: Use 'assistant' which is the standard role LiteLLM expects.
+            # 'model' is specific to Gemini's API and causes errors in LiteLLM.
+            role = "user" if msg.role == "user" else "assistant"
             parts = []
             
             if isinstance(msg.content, str):

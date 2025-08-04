@@ -392,8 +392,8 @@ class LiteLLMAdapter:
     
     def _safe_validate_messages(self, messages: List[Dict[str, Any]]) -> bool:
         """
-        Safe message validation that also standardizes message format by converting 'parts' or 'text' to 'content'.
-        This method modifies the message list in-place to prevent downstream errors with LiteLLM.
+        Safe message validation that standardizes message format and ensures LiteLLM compatibility.
+        This method modifies the message list in-place to prevent downstream errors.
         """
         try:
             if not messages:
@@ -404,6 +404,12 @@ class LiteLLMAdapter:
                 if not isinstance(msg, dict) or 'role' not in msg:
                     logger.warning(f"Message {i} is not a valid dict with a 'role'.")
                     return False
+
+                # FIX: Ensure role name meets OpenAI standard as expected by LiteLLM.
+                # This converts Gemini's 'model' role to the standard 'assistant' role.
+                if msg['role'] == 'model':
+                    msg['role'] = 'assistant'
+                    logger.debug(f"Standardized role from 'model' to 'assistant' for message {i}")
 
                 # Rule 1: If 'content' exists, it is the source of truth. Remove other text-like fields.
                 if 'content' in msg:
