@@ -50,9 +50,15 @@ class APIKeyInfo:
     total_requests: int = 0
     successful_requests: int = 0
 
+# =============================================================================
+# MODIFICATION 1: 
+# - Corrected `messages` from `List[Dict[str, str]]` to `List[Dict[str, Any]]` 
+#   to prevent a validation error and application crash.
+# - Changed default model to `gemini-2.5-pro` as per user's preference.
+# =============================================================================
 class ChatRequest(BaseModel):
-    messages: List[Dict[str, str]]
-    model: str = "gemini-1.5-pro-latest"
+    messages: List[Dict[str, Any]]
+    model: str = "gemini-2.5-pro"
     temperature: Optional[float] = Field(default=0.1, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(default=0.95, ge=0.0, le=1.0)
     max_tokens: Optional[int] = Field(default=None, ge=1)
@@ -65,8 +71,8 @@ class ChatRequest(BaseModel):
         if not v:
             raise ValueError("Messages cannot be empty")
         for msg in v:
-            if not isinstance(msg, dict) or 'role' not in msg or 'content' not in msg:
-                raise ValueError("Each message must have 'role' and 'content' fields")
+            if not isinstance(msg, dict) or 'role' not in msg or ('content' not in msg and 'parts' not in msg):
+                raise ValueError("Each message must have 'role' and 'content' or 'parts' fields")
         return v
 
 class SecurityConfig:
@@ -557,6 +563,28 @@ async def optimized_health_check_task():
             logger.error(f"Health check error: {e}")
             await asyncio.sleep(60)
 
+# =============================================================================
+# MODIFICATION 2:
+# Added a custom model conversion function to meet user's specific model needs.
+# =============================================================================
+def custom_convert_model(anthropic_model: str) -> str:
+    """
+    Converts an Anthropic model name to a corresponding Gemini model name
+    based on the user's explicit requirements.
+
+    - "sonnet" and "opus" variants map to "gemini-2.5-pro".
+    - "haiku" variants map to "gemini-2.5-flash".
+    """
+    anthropic_model_lower = anthropic_model.lower()
+    
+    if "sonnet" in anthropic_model_lower or "opus" in anthropic_model_lower:
+        return "gemini-2.5-pro"
+    elif "haiku" in anthropic_model_lower:
+        return "gemini-2.5-flash"
+    else:
+        logger.warning(f"Model '{anthropic_model}' not in custom mappings, falling back to 'gemini-2.5-pro'.")
+        return "gemini-2.5-pro"
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global key_manager, adapter, security_config, api_config
@@ -577,6 +605,15 @@ async def lifespan(app: FastAPI):
         
         working_dir = os.getenv("CLAUDE_CODE_WORKING_DIR", ".")
         api_config = AnthropicAPIConfig(working_directory=working_dir)
+        
+        # =============================================================================
+        # MODIFICATION 3:
+        # Monkey-patch the original model converter with our custom function
+        # during application startup. This applies the new mapping logic.
+        # =============================================================================
+        api_config.anthropic_to_gemini.convert_model = custom_convert_model
+        logger.info("Applied custom model mapping: 'opus'/'sonnet' -> 'gemini-2.5-pro', 'haiku' -> 'gemini-2.5-flash'.")
+
         logger.info(f"Claude Code support enabled. Working directory: {api_config.working_directory}")
         
         key_manager = GeminiKeyManager(app_config)
