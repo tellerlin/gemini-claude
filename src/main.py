@@ -64,12 +64,29 @@ class ChatRequest(BaseModel):
     def validate_messages(cls, v):
         if not v:
             raise ValueError("Messages cannot be empty")
-        for msg in v:
+        for i, msg in enumerate(v):
             if not isinstance(msg, dict) or 'role' not in msg:
-                raise ValueError("Each message must have 'role' field")
-            # More flexible validation - allow either content or parts
-            if 'content' not in msg and 'parts' not in msg and 'text' not in msg:
-                logger.warning(f"Message may be missing content: {msg}")
+                raise ValueError(f"Message {i} must have 'role' field")
+            
+            # Enhanced validation for different message formats
+            has_content = False
+            
+            # Check for various content formats
+            if 'content' in msg and msg['content']:
+                has_content = True
+            elif 'parts' in msg and isinstance(msg['parts'], list):
+                # Check if parts array has valid content
+                for part in msg['parts']:
+                    if isinstance(part, dict) and 'text' in part and part['text'].strip():
+                        has_content = True
+                        break
+            elif 'text' in msg and msg['text']:
+                has_content = True
+            
+            # Only warn for missing content, don't fail validation
+            if not has_content:
+                logger.warning(f"Message {i} may be missing content: {msg}")
+        
         return v
 
 class SecurityConfig:
@@ -387,11 +404,29 @@ class LiteLLMAdapter:
                     logger.warning(f"Message {i} missing 'role': {msg}")
                     return False
                 
-                # Check for any content field
-                has_content = any(field in msg for field in ['content', 'parts', 'text'])
+                # Enhanced content validation to handle Claude Code format
+                has_content = False
+                
+                # Check for simple content field
+                if 'content' in msg and msg['content']:
+                    has_content = True
+                
+                # Check for parts array (Claude Code format)
+                elif 'parts' in msg and isinstance(msg['parts'], list) and len(msg['parts']) > 0:
+                    # Validate that parts contain actual content
+                    for part in msg['parts']:
+                        if isinstance(part, dict) and 'text' in part and part['text'].strip():
+                            has_content = True
+                            break
+                
+                # Check for direct text field
+                elif 'text' in msg and msg['text']:
+                    has_content = True
+                
                 if not has_content:
-                    logger.warning(f"Message {i} has no content field: {msg}")
-                    # Don't fail validation, just warn
+                    logger.warning(f"Message {i} has no valid content: {msg}")
+                    # Don't fail validation for empty content, just warn
+                    # Some messages might be system messages or have other purposes
                     
             return True
         except Exception as e:
