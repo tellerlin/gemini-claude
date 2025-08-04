@@ -36,6 +36,22 @@ from anthropic_api import (
 
 load_dotenv()
 
+def safe_format_for_log(message: str, *args, **kwargs) -> str:
+    """
+    安全地格式化日志消息，避免因特殊字符导致的格式化错误
+    """
+    try:
+        # 如果有参数，尝试格式化
+        if args or kwargs:
+            return message.format(*args, **kwargs)
+        else:
+            return message
+    except (ValueError, KeyError) as e:
+        # 如果格式化失败，返回原始消息加上参数的repr
+        safe_args = [repr(arg) for arg in args]
+        safe_kwargs = {k: repr(v) for k, v in kwargs.items()}
+        return f"{message} [FORMAT_ERROR: args={safe_args}, kwargs={safe_kwargs}]"
+
 class KeyStatus(Enum):
     ACTIVE = "active"
     COOLING = "cooling"
@@ -717,7 +733,8 @@ class LiteLLMAdapter:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error in anthropic_messages_completion: {e}", exc_info=True)
+            # 修复：使用 repr() 来安全地格式化异常信息
+            logger.error(f"Error in anthropic_messages_completion: {repr(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
     async def chat_completion_with_litellm(self, litellm_kwargs: Dict) -> Any:
@@ -954,7 +971,8 @@ async def create_message(request: MessagesRequest, raw_request: Request, api_key
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in /v1/messages: {e}", exc_info=True)
+        # 修复：使用 repr() 来安全地格式化异常信息
+        logger.error(f"Error in /v1/messages: {repr(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.options("/v1/messages")
@@ -1037,7 +1055,8 @@ async def recover_key_endpoint(key_prefix: str, api_key: str = Depends(verify_ad
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception for request {request.method} {request.url}: {exc}", exc_info=True)
+    # 修复：使用 repr() 来安全地格式化异常信息
+    logger.error(f"Unhandled exception for request {request.method} {request.url}: {repr(exc)}", exc_info=True)
     if isinstance(exc, HTTPException):
         return JSONResponse(status_code=exc.status_code, content={"error": {"message": exc.detail, "type": "http_exception"}})
     return JSONResponse(status_code=500, content={"error": {"message": "An internal server error occurred.", "type": "internal_error"}})

@@ -99,7 +99,8 @@ class MessagesResponse(BaseModel):
     id: str
     model: str
     role: Literal["assistant"] = "assistant"
-    content: List[Union[ContentBlockText, ContentBlockToolUse]]
+    # 修复：添加 ContentBlockToolResult 到联合类型中
+    content: List[Union[ContentBlockText, ContentBlockToolUse, ContentBlockToolResult]]
     type: Literal["message"] = "message"
     stop_reason: Optional[Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]] = None
     stop_sequence: Optional[str] = None
@@ -155,6 +156,9 @@ class ClaudeCodeToolSimulator:
                 "run_command": self._run_command,
                 "run_bash": self._run_bash,
                 "run_python": self._run_python,
+                # 添加对 "Bash" 工具的支持（映射到 run_bash）
+                "Bash": self._run_bash,
+                "bash": self._run_bash,
 
                 # Git Operations
                 "git_status": self._git_status,
@@ -502,9 +506,10 @@ class ClaudeCodeToolSimulator:
             return {"error": f"Command failed: {str(e)}"}
 
     async def _run_bash(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        script = input_data.get("script", "")
+        # 增强：检查 'script' 或 'command' 参数以提高兼容性
+        script = input_data.get("script") or input_data.get("command")
         if not script:
-            return {"error": "No script provided"}
+            return {"error": "No script or command provided"}
         return await self._run_command({"command": script})
     
     async def _run_python(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1021,4 +1026,25 @@ class AnthropicAPIConfig:
             "list_packages": {"description": "List installed packages.", "parameters": {"type": "object", "properties": {"manager": {"type": "string", "enum": ["pip", "npm"], "default": "pip"}}}},
             "download_file": {"description": "Download a file from a URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "output": {"type": "string", "default": ""}}, "required": ["url"]}},
             "curl": {"description": "Make a GET request to a URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
+            # 添加 Bash 工具定义
+            "Bash": {
+                "description": "Execute bash commands or scripts.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "script": {"type": "string", "description": "The bash script or command to execute"}
+                    },
+                    "required": ["script"]
+                }
+            },
+            "bash": {
+                "description": "Execute bash commands or scripts.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "script": {"type": "string", "description": "The bash script or command to execute"}
+                    },
+                    "required": ["script"]
+                }
+            },
         }
