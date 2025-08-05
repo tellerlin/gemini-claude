@@ -15,7 +15,7 @@ export CLIENT_KEY="your-client-key"
 export ADMIN_KEY="your-admin-key"
 
 # The base URL of your running service
-BASE_URL="http://localhost:80"
+BASE_URL="http://localhost:8000"
 
 # --- SCRIPT LOGIC (No need to edit below) ---
 
