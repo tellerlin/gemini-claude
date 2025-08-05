@@ -136,11 +136,24 @@ class NativeGeminiAdapter:
 
             logger.info(f"Attempt {attempt + 1}/{max_attempts} using key {key_info.key[:8]}...")
             try:
+                # --- MODIFIED SECTION START ---
+                # 处理 system prompt，将其转换为 Gemini API 需要的字符串格式
+                system_prompt_str = ""
+                if isinstance(request.system, str):
+                    system_prompt_str = request.system
+                elif isinstance(request.system, list):
+                    # 从字典列表中提取文本并连接
+                    system_prompt_str = "\n".join(
+                        item.get("text", "") for item in request.system if item.get("type") == "text"
+                    )
+                
                 genai.configure(api_key=key_info.key)
                 model = genai.GenerativeModel(
                     model_name=self.api_config.anthropic_to_gemini.convert_model(request.model),
-                    system_instruction=request.system
+                    system_instruction=system_prompt_str  # 使用处理后的字符串
                 )
+                # --- MODIFIED SECTION END ---
+                
                 generation_config = genai.types.GenerationConfig(
                     max_output_tokens=request.max_tokens,
                     temperature=request.temperature

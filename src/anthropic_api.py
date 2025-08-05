@@ -54,7 +54,10 @@ class MessagesRequest(BaseModel):
     model: str
     max_tokens: int
     messages: List[Message]
-    system: Optional[str] = None
+    # --- MODIFIED SECTION START ---
+    # 允许 system 字段是字符串或字典列表，以兼容 Claude Code 客户端
+    system: Optional[Union[str, List[Dict[str, Any]]]] = None
+    # --- MODIFIED SECTION END ---
     stream: bool = False
     temperature: float = 1.0
     tools: Optional[List[Tool]] = None
