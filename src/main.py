@@ -18,7 +18,6 @@ import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
 
 # 本地模块导入
-# To (absolute imports from the src package)
 from src.anthropic_api import (
     MessagesRequest, MessagesResponse, APIConfig, log_request_beautifully
 )
@@ -136,7 +135,6 @@ class NativeGeminiAdapter:
 
             logger.info(f"Attempt {attempt + 1}/{max_attempts} using key {key_info.key[:8]}...")
             try:
-                # --- MODIFIED SECTION START ---
                 # 处理 system prompt，将其转换为 Gemini API 需要的字符串格式
                 system_prompt_str = ""
                 if isinstance(request.system, str):
@@ -150,25 +148,38 @@ class NativeGeminiAdapter:
                 genai.configure(api_key=key_info.key)
                 model = genai.GenerativeModel(
                     model_name=self.api_config.anthropic_to_gemini.convert_model(request.model),
-                    system_instruction=system_prompt_str  # 使用处理后的字符串
+                    system_instruction=system_prompt_str
                 )
-                # --- MODIFIED SECTION END ---
                 
                 generation_config = genai.types.GenerationConfig(
                     max_output_tokens=request.max_tokens,
                     temperature=request.temperature
                 )
+                
+                # 转换消息和工具
                 messages = self.api_config.anthropic_to_gemini.convert_messages(request.messages)
+                gemini_tools = self.api_config.anthropic_to_gemini.convert_tools(request.tools)
+                
+                # 记录工具转换情况
+                if request.tools and gemini_tools:
+                    logger.info(f"Converted {len(request.tools)} Anthropic tools to {len(gemini_tools)} Gemini tools")
+                elif request.tools and not gemini_tools:
+                    logger.warning(f"Failed to convert {len(request.tools)} Anthropic tools - no valid Gemini tools created")
                 
                 if request.stream:
                     stream = await model.generate_content_async(
-                        messages, stream=True, generation_config=generation_config,
+                        messages, 
+                        stream=True, 
+                        generation_config=generation_config,
+                        tools=gemini_tools,
                         request_options={'timeout': config.GEMINI_REQUEST_TIMEOUT}
                     )
                     return self.api_config.gemini_to_anthropic.convert_stream_response(stream, request)
                 else:
                     response = await model.generate_content_async(
-                        messages, generation_config=generation_config,
+                        messages, 
+                        generation_config=generation_config,
+                        tools=gemini_tools,
                         request_options={'timeout': config.GEMINI_REQUEST_TIMEOUT}
                     )
                     return self.api_config.gemini_to_anthropic.convert_response(response, request)
