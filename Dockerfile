@@ -27,7 +27,7 @@ WORKDIR /app
 COPY --chown=appuser:appuser start.sh .
 RUN chmod +x ./start.sh
 
-COPY --chown=appuser:appuser ./src .
+COPY --chown=appuser:appuser ./src ./src
 
 RUN mkdir -p logs && chown appuser:appuser logs
 
