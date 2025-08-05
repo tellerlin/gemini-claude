@@ -1,29 +1,40 @@
-# Stage 1: Builder
+# --- 1. Builder Stage ---
 FROM python:3.11-slim as builder
 
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix="/install" -r requirements.txt
 
-# Stage 2: Final Image
+COPY requirements.txt .
+[cite_start]RUN pip install --no-cache-dir --prefix="/install" -r requirements.txt [cite: 2]
+
+# --- 2. Production Stage ---
 FROM python:3.11-slim
 
-RUN useradd --create-home --shell /bin/bash appuser
-COPY --from=builder /install /install
-
-# Add the /install/bin directory to the PATH
-ENV PATH=/install/bin:$PATH
-
-# Add the site-packages directory to PYTHONPATH
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/install/lib/python3.11/site-packages
 
+RUN useradd --create-home --shell /bin/bash appuser
+
+[cite_start]COPY --from=builder /install /install [cite: 1]
+
 WORKDIR /app
+
+# 复制启动脚本并赋予执行权限
+COPY --chown=appuser:appuser start.sh .
+RUN chmod +x ./start.sh
+
 COPY --chown=appuser:appuser ./src .
 
-RUN mkdir -p logs && chown appuser:appuser logs
+[cite_start]RUN mkdir -p logs && chown appuser:appuser logs [cite: 3]
 
 USER appuser
 
 EXPOSE 8000
 
-CMD ["gunicorn", "--workers", "1", "--threads", "8", "--bind", "0.0.0.0:8000", "--log-level", "info", "--access-logfile", "logs/access.log", "--error-logfile", "logs/error.log", "main:app"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD python -c "import urllib.request; exit(0) if urllib.request.urlopen('http://localhost:8000/health', timeout=10).getcode() == 200 else exit(1)"
+
+# 使用启动脚本来启动应用
+CMD ["./start.sh"]
