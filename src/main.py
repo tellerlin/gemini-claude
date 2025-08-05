@@ -18,11 +18,12 @@ import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
 
 # 本地模块导入
-from .anthropic_api import (
+# To (absolute imports from the src package)
+from src.anthropic_api import (
     MessagesRequest, MessagesResponse, APIConfig, log_request_beautifully
 )
-from .config import load_configuration, get_config
-from .performance import initialize_performance_modules, get_performance_stats, monitor_performance
+from src.config import load_configuration, get_config
+from src.performance import initialize_performance_modules, get_performance_stats, monitor_performance
 
 # 加载环境变量
 load_dotenv()

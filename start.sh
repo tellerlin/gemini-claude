@@ -24,7 +24,7 @@ echo "➤ Workers: $WORKERS"
 # -w: 工作进程数
 # -k: 使用 uvicorn.workers.UvicornWorker 作为工作进程类，以支持 FastAPI 的异步特性
 # -b: 绑定地址和端口
-exec gunicorn "main:app" \
+exec gunicorn "src.main:app" \
     --workers $WORKERS \
     --worker-class "uvicorn.workers.UvicornWorker" \
     --bind "$SERVICE_HOST:$SERVICE_PORT"
