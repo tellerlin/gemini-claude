@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 
 COPY requirements.txt .
-[cite_start]RUN pip install --no-cache-dir --prefix="/install" -r requirements.txt [cite: 2]
+RUN pip install --no-cache-dir --prefix="/install" -r requirements.txt
 
 # --- 2. Production Stage ---
 FROM python:3.11-slim
@@ -17,7 +17,7 @@ ENV PYTHONPATH=/install/lib/python3.11/site-packages
 
 RUN useradd --create-home --shell /bin/bash appuser
 
-[cite_start]COPY --from=builder /install /install [cite: 1]
+COPY --from=builder /install /install
 
 WORKDIR /app
 
@@ -27,7 +27,7 @@ RUN chmod +x ./start.sh
 
 COPY --chown=appuser:appuser ./src .
 
-[cite_start]RUN mkdir -p logs && chown appuser:appuser logs [cite: 3]
+RUN mkdir -p logs && chown appuser:appuser logs
 
 USER appuser
 
