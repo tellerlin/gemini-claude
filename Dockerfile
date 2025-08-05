@@ -1,60 +1,55 @@
-# Use multi-stage builds to optimize the final image size
+# --- 1. Builder Stage ---
+# 使用一个包含构建工具的镜像来安装依赖
 FROM python:3.11-slim as builder
 
-# Set build arguments
-ARG DEBIAN_FRONTEND=noninteractive
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set working directory
-WORKDIR /app
-
-# Copy requirements file
-COPY requirements.txt .
-# Install Python dependencies. When run as root, --user installs to /root/.local
-RUN pip install --no-cache-dir --user -r requirements.txt
-
-# --- Production Stage ---
-FROM python:3.11-slim
-
-# Set environment variables
+# 设置环境变量，避免交互式提示
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-# Add the user's local bin to the PATH.
-# This is where pip installs executables.
-ENV PATH="/home/appuser/.local/bin:$PATH"
-
-# Create a non-root user to run the application
-RUN useradd --create-home --shell /bin/bash appuser
-
-# Copy the installed packages from the builder stage
-# The source path is /root/.local because the previous stage ran as root.
-COPY --from=builder /root/.local /home/appuser/.local
-
-# Set the working directory
 WORKDIR /app
 
-# --- CORRECTED: Copy all source files in a single, correct line ---
-# Copy the source code, chown to the non-root user
-COPY --chown=appuser:appuser ./src /app/
+# 复制依赖文件
+COPY requirements.txt .
 
-# Create the logs directory and set ownership
+# 安装依赖到一个特定目录，以便后续复制
+# --prefix 指定安装路径，而不是使用 --user
+RUN pip install --no-cache-dir --prefix="/install" -r requirements.txt
+
+# --- 2. Production Stage ---
+# 使用一个干净、轻量的基础镜像
+FROM python:3.11-slim
+
+# 设置环境变量
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+# 将安装的包路径添加到 PYTHONPATH
+ENV PYTHONPATH=/install/lib/python3.11/site-packages
+
+# 创建一个非 root 用户来运行应用，增加安全性
+RUN useradd --create-home --shell /bin/bash appuser
+
+# 从 builder 阶段复制已安装的依赖
+COPY --from=builder /install /install
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制应用源代码，并设置所有者为 appuser
+# 注意：假设你的代码在 src 目录下
+COPY --chown=appuser:appuser ./src .
+
+# 创建日志目录并设置权限
 RUN mkdir -p logs && chown appuser:appuser logs
 
-# Switch to the non-root user
+# 切换到非 root 用户
 USER appuser
 
-# Expose the port the app runs on
+# 暴露应用运行的端口
 EXPOSE 8000
 
-# Fix Healthcheck to use a library that is guaranteed to be available (urllib)
+# 健康检查，确保服务正常运行
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10).read() || exit 1"
+  CMD python -c "import urllib.request; exit(0) if urllib.request.urlopen('http://localhost:8000/health', timeout=10).getcode() == 200 else exit(1)"
 
-# --- RESTORED: Use Gunicorn to run the application ---
-# Use Gunicorn with Uvicorn workers, and read the number of workers from the
-# SERVICE_WORKERS environment variable, defaulting to 1 if not set.
-CMD gunicorn main:app -w ${SERVICE_WORKERS:-1} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
+# 使用 Gunicorn 启动应用，这是生产环境推荐的方式
+# 从环境变量读取工作进程数，默认为1
+CMD ["gunicorn", "main:app", "-w", "${SERVICE_WORKERS:-1}", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000"]

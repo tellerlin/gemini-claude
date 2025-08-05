@@ -10,8 +10,8 @@ try:
     from google.api_core import exceptions as google_exceptions
     from dotenv import load_dotenv
 except ImportError:
-    print("错误：必要的库未安装。")
-    print("请运行以下命令来安装此脚本所需的依赖：")
+    print("Error: Required libraries are not installed.")
+    print("Please run the following command to install dependencies for this script:")
     print("pip install python-dotenv google-generativeai")
     sys.exit(1)
 
@@ -37,38 +37,35 @@ def check_gemini_api_key(api_key: str) -> Tuple[str, str]:
     """
     try:
         genai.configure(api_key=api_key)
-        
-        # --- FINAL MODIFICATION ---
-        # Changed model to 'gemini-2.5-pro' as requested.
         model = genai.GenerativeModel('gemini-2.5-pro')
         model.generate_content(
-            'test', 
+            'test',
             generation_config=genai.types.GenerationConfig(max_output_tokens=1)
         )
-        # --- END FINAL MODIFICATION ---
-
         return 'valid', 'Key is valid and has sufficient quota for gemini-2.5-pro.'
     except (google_exceptions.PermissionDenied, google_exceptions.Unauthenticated) as e:
         return 'permanently invalid', f'Authentication failed. Key is invalid or disabled. (Reason: {getattr(e, "message", str(e))})'
     except google_exceptions.ResourceExhausted as e:
         return 'temporarily invalid', f'Quota exceeded or rate limit hit. (Reason: {getattr(e, "message", str(e))})'
     except google_exceptions.DeadlineExceeded:
-        return 'temporarily invalid', 'Request timed out. Could be a temporary issue with the API or network.'
+        return 'temporarily invalid', 'Request timed out.'
     except google_exceptions.ServiceUnavailable:
-        return 'temporarily invalid', 'The Google AI service is currently unavailable. Please try again later.'
+        return 'temporarily invalid', 'The Google AI service is currently unavailable.'
     except google_exceptions.GoogleAPICallError as e:
-        # Handle cases where the model might not exist or be available to the user
         if 'model not found' in str(e).lower() or 'permission' in str(e).lower():
-             return 'permanently invalid', f'Model gemini-2.5-pro not found or not accessible with this key. (Reason: {getattr(e, "message", str(e))})'
+             return 'permanently invalid', f'Model gemini-2.5-pro not found or not accessible. (Reason: {getattr(e, "message", str(e))})'
         return 'permanently invalid', f'An unexpected API error occurred (Code: {getattr(e, "code", "N/A")}). (Reason: {getattr(e, "message", str(e))})'
     except Exception as e:
-        # Catch any other unexpected exceptions (like network issues)
         return 'temporarily invalid', f'An unexpected network or client-side error occurred: {e}'
 
-# The rest of the file (update_env_file, main) remains unchanged.
-def update_env_file(keys_to_keep: List[str], original_env_path: str = '.env'):
+def update_env_file(keys_to_keep: List[str], env_file_path: str):
+    """
+    Creates a new .env.updated file in the correct directory.
+    """
+    original_env_path = env_file_path
     new_env_path = f"{original_env_path}.updated"
     updated_keys_str = ",".join(keys_to_keep)
+
     try:
         with open(original_env_path, 'r') as f_in, open(new_env_path, 'w') as f_out:
             for line in f_in:
@@ -76,21 +73,29 @@ def update_env_file(keys_to_keep: List[str], original_env_path: str = '.env'):
                     f_out.write(f'GEMINI_API_KEYS={updated_keys_str}\n')
                 else:
                     f_out.write(line)
-    except FileNotFoundError:
-        print(f"\n{bcolors.FAIL}Error: The original '{original_env_path}' file was not found.{bcolors.ENDC}")
-        print("Creating a new '.env.updated' file with only the keys to keep.")
-        with open(new_env_path, 'w') as f_out:
-            f_out.write(f'GEMINI_API_KEYS={updated_keys_str}\n')
-    print(f"\n{bcolors.OKGREEN}✅ Success! A new file `.env.updated` has been created.{bcolors.ENDC}")
-    print(f"Please review it and rename to `.env` if correct.")
+        print(f"\n{bcolors.OKGREEN}✅ Success! A new file `{new_env_path}` has been created.{bcolors.ENDC}")
+        print(f"Please review it and rename to `.env` if correct.")
+    except Exception as e:
+        print(f"\n{bcolors.FAIL}Error writing updated .env file: {e}{bcolors.ENDC}")
 
 def main():
-    load_dotenv()
+    """
+    Main function to run the API key checker tool.
+    """
+    data_dir = "/data"
+    if os.path.exists(data_dir):
+        env_file_path = os.path.join(data_dir, '.env')
+        os.chdir(data_dir)
+    else:
+        env_file_path = '.env'
+
+    load_dotenv(dotenv_path=env_file_path)
+
     api_keys_str = os.getenv("GEMINI_API_KEYS", "")
     initial_keys = [key.strip() for key in api_keys_str.split(',') if key.strip()]
 
     if not initial_keys or initial_keys == ['your-google-ai-api-key-1', 'your-google-ai-api-key-2']:
-        print(f"{bcolors.FAIL}Error: No valid API keys found in .env file.{bcolors.ENDC}")
+        print(f"{bcolors.FAIL}Error: No valid API keys found in {env_file_path}.{bcolors.ENDC}")
         sys.exit(1)
 
     print(f"{bcolors.HEADER}--- Step 1: Pre-processing Keys ---{bcolors.ENDC}")
@@ -104,7 +109,7 @@ def main():
             invalid_format_keys.append(key)
 
     if invalid_format_keys:
-        print(f"{bcolors.WARNING}Warning: Found {len(invalid_format_keys)} invalid format key(s):{bcolors.ENDC}")
+        print(f"{bcolors.WARNING}Warning: Found {len(invalid_format_keys)} key(s) with an invalid format. They will be ignored:{bcolors.ENDC}")
         for key in invalid_format_keys: print(f"  - {key}")
 
     unique_keys = list(dict.fromkeys(valid_format_keys))
@@ -112,7 +117,7 @@ def main():
         print(f"{bcolors.OKCYAN}Removed {len(valid_format_keys) - len(unique_keys)} duplicate key(s).{bcolors.ENDC}")
 
     if not unique_keys:
-        print(f"{bcolors.FAIL}\nNo valid formatted keys remain to check. Exiting.{bcolors.ENDC}")
+        print(f"{bcolors.FAIL}\nAfter pre-processing, no valid formatted keys remain to be checked. Exiting.{bcolors.ENDC}")
         sys.exit(1)
 
     print(f"Proceeding to check {len(unique_keys)} unique, valid-format key(s).")
@@ -154,9 +159,9 @@ def main():
                 print(f"{bcolors.FAIL}Invalid choice. Please enter 1, 2, or 3.{bcolors.ENDC}\n")
                 continue
             if not keys_to_keep:
-                print(f"{bcolors.FAIL}\nError: Your choice would result in zero keys being saved. Not allowed.{bcolors.ENDC}")
+                print(f"{bcolors.FAIL}\nError: Your choice would result in zero keys being saved. This is not allowed.{bcolors.ENDC}")
                 continue
-            update_env_file(keys_to_keep)
+            update_env_file(keys_to_keep, env_file_path)
             break
     except KeyboardInterrupt:
         print("\n\nOperation cancelled by user. Exiting.")
