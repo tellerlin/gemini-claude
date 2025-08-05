@@ -29,6 +29,12 @@ RUN chmod +x ./start.sh
 
 COPY --chown=appuser:appuser ./src ./src
 
+# --- MODIFIED SECTION ---
+# 复制诊断脚本到容器中
+COPY --chown=appuser:appuser api_key_checker.py .
+COPY --chown=appuser:appuser diagnose_script.py .
+# --- END OF MODIFIED SECTION ---
+
 RUN mkdir -p logs && chown appuser:appuser logs
 
 USER appuser
