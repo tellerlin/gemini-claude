@@ -14,8 +14,12 @@ logger = logging.getLogger(__name__)
 
 # ANSI 颜色代码，用于美化日志输出
 class Colors:
-    CYAN = "\033[96m"; BLUE = "\033[94m"; GREEN = "\033[92m"
-    MAGENTA = "\033[95m"; RESET = "\033[0m"; BOLD = "\033[1m"
+    CYAN = "\033[96m"
+    BLUE = "\033[94m"
+    GREEN = "\033[92m"
+    MAGENTA = "\033[95m"
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
 
 def log_request_beautifully(method: str, path: str, anthropic_model: str, gemini_model: str,
                           num_messages: int, num_tools: int):
@@ -28,32 +32,59 @@ def log_request_beautifully(method: str, path: str, anthropic_model: str, gemini
 
 # ========== Anthropic API 数据模型 ==========
 class ContentBlockText(BaseModel):
-    type: Literal["text"] = "text"; text: str
+    type: Literal["text"] = "text"
+    text: str
+
 class ContentBlockToolUse(BaseModel):
-    type: Literal["tool_use"] = "tool_use"; id: str; name: str; input: Dict[str, Any]
+    type: Literal["tool_use"] = "tool_use"
+    id: str
+    name: str
+    input: Dict[str, Any]
+
 class Message(BaseModel):
-    role: Literal["user", "assistant"]; content: Union[str, List[Union[ContentBlockText, ContentBlockToolUse]]]
+    role: Literal["user", "assistant"]
+    content: Union[str, List[Union[ContentBlockText, ContentBlockToolUse]]]
+
 class Tool(BaseModel):
-    name: str; description: Optional[str] = None; input_schema: Dict[str, Any]
+    name: str
+    description: Optional[str] = None
+    input_schema: Dict[str, Any]
+
 class MessagesRequest(BaseModel):
-    model: str; max_tokens: int; messages: List[Message]
-    system: Optional[str] = None; stream: bool = False; temperature: float = 1.0
-    tools: Optional[List[Tool]] = None; tool_choice: Optional[Dict[str, Any]] = None
+    model: str
+    max_tokens: int
+    messages: List[Message]
+    system: Optional[str] = None
+    stream: bool = False
+    temperature: float = 1.0
+    tools: Optional[List[Tool]] = None
+    tool_choice: Optional[Dict[str, Any]] = None
+
 class Usage(BaseModel):
-    input_tokens: int; output_tokens: int
+    input_tokens: int
+    output_tokens: int
+
 class MessagesResponse(BaseModel):
-    id: str; model: str; role: Literal["assistant"] = "assistant"
-    content: List[Union[ContentBlockText, ContentBlockToolUse]]; type: Literal["message"] = "message"
+    id: str
+    model: str
+    role: Literal["assistant"] = "assistant"
+    content: List[Union[ContentBlockText, ContentBlockToolUse]]
+    type: Literal["message"] = "message"
     stop_reason: Optional[Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]] = None
     usage: Usage
 
 # ========== 转换器类 ==========
 class AnthropicToGeminiConverter:
     def convert_model(self, anthropic_model: str) -> str:
-        model_map = {"sonnet": "gemini-2.5-pro", "opus": "gemini-2.5-pro", "haiku": "gemini-2.5-flash"}
+        model_map = {
+            "sonnet": "gemini-2.0-flash-exp",
+            "opus": "gemini-2.0-flash-exp", 
+            "haiku": "gemini-2.0-flash-exp"
+        }
         for key, value in model_map.items():
-            if key in anthropic_model.lower(): return value
-        return "gemini-2.5-pro"
+            if key in anthropic_model.lower():
+                return value
+        return "gemini-2.0-flash-exp"
 
     def convert_messages(self, messages: List[Message]) -> List[ContentDict]:
         gemini_messages = []
@@ -64,8 +95,10 @@ class AnthropicToGeminiConverter:
             elif isinstance(msg.content, list):
                 parts = []
                 for block in msg.content:
-                    if isinstance(block, ContentBlockText): parts.append(PartDict(text=block.text))
-                if parts: gemini_messages.append({'role': role, 'parts': parts})
+                    if isinstance(block, ContentBlockText):
+                        parts.append(PartDict(text=block.text))
+                if parts:
+                    gemini_messages.append({'role': role, 'parts': parts})
         return gemini_messages
 
 class GeminiToAnthropicConverter:
@@ -75,27 +108,51 @@ class GeminiToAnthropicConverter:
         
         if gemini_response.candidates:
             candidate = gemini_response.candidates[0]
-            if candidate.finish_reason.name in ["MAX_TOKENS", "LENGTH"]: stop_reason = "max_tokens"
+            if candidate.finish_reason.name in ["MAX_TOKENS", "LENGTH"]:
+                stop_reason = "max_tokens"
             
             for part in candidate.content.parts:
-                if part.text: content_parts.append(ContentBlockText(text=part.text))
+                if part.text:
+                    content_parts.append(ContentBlockText(text=part.text))
         
         # 如果没有文本内容，确保返回一个空的文本块
-        if not content_parts: content_parts.append(ContentBlockText(text=""))
+        if not content_parts:
+            content_parts.append(ContentBlockText(text=""))
         
         usage = Usage(
-            input_tokens=gemini_response.usage_metadata.prompt_token_count,
-            output_tokens=gemini_response.usage_metadata.candidates_token_count
+            input_tokens=gemini_response.usage_metadata.prompt_token_count if gemini_response.usage_metadata else 0,
+            output_tokens=gemini_response.usage_metadata.candidates_token_count if gemini_response.usage_metadata else 0
         )
+        
         return MessagesResponse(
-            id=f"msg_gemini_{uuid.uuid4().hex}", model=original_request.model,
-            content=content_parts, stop_reason=stop_reason, usage=usage
+            id=f"msg_gemini_{uuid.uuid4().hex}",
+            model=original_request.model,
+            content=content_parts,
+            stop_reason=stop_reason,
+            usage=usage
         )
 
-    async def convert_stream_response(self, gemini_stream: AsyncGenerator[genai.types.GenerateContentResponse, None], original_request: MessagesRequest) -> AsyncGenerator[str, None]:
+    async def convert_stream_response(self, gemini_stream, original_request: MessagesRequest) -> AsyncGenerator[str, None]:
         message_id = f"msg_gemini_{uuid.uuid4().hex}"
-        yield self._create_sse_event("message_start", {"message": { "id": message_id, "type": "message", "role": "assistant", "model": original_request.model, "content": [], "stop_reason": None, "usage": {"input_tokens": 0, "output_tokens": 0}}})
-        yield self._create_sse_event("content_block_start", {"index": 0, "content_block": {"type": "text", "text": ""}})
+        
+        # 发送 message_start 事件
+        yield self._create_sse_event("message_start", {
+            "message": {
+                "id": message_id,
+                "type": "message",
+                "role": "assistant",
+                "model": original_request.model,
+                "content": [],
+                "stop_reason": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0}
+            }
+        })
+        
+        # 发送 content_block_start 事件
+        yield self._create_sse_event("content_block_start", {
+            "index": 0,
+            "content_block": {"type": "text", "text": ""}
+        })
         
         final_usage = {"input_tokens": 0, "output_tokens": 0}
         stop_reason = "end_turn"
@@ -103,19 +160,34 @@ class GeminiToAnthropicConverter:
         try:
             async for chunk in gemini_stream:
                 if chunk.text:
-                    yield self._create_sse_event("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": chunk.text}})
+                    yield self._create_sse_event("content_block_delta", {
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": chunk.text}
+                    })
+                
                 if chunk.usage_metadata:
                     final_usage["input_tokens"] = chunk.usage_metadata.prompt_token_count
-                    final_usage["output_tokens"] += chunk.usage_metadata.candidates_token_count
-                if chunk.candidates and chunk.candidates[0].finish_reason.name in ["MAX_TOKENS", "LENGTH"]:
+                    final_usage["output_tokens"] = chunk.usage_metadata.candidates_token_count
+                
+                if chunk.candidates and chunk.candidates[0].finish_reason and chunk.candidates[0].finish_reason.name in ["MAX_TOKENS", "LENGTH"]:
                     stop_reason = "max_tokens"
+                    
         except Exception as e:
             logger.error(f"Error processing Gemini stream: {e}", exc_info=True)
-            yield self._create_sse_event("error", {"error": {"type": "internal_server_error", "message": str(e)}})
+            yield self._create_sse_event("error", {
+                "error": {
+                    "type": "internal_server_error",
+                    "message": str(e)
+                }
+            })
             return
 
+        # 发送结束事件
         yield self._create_sse_event("content_block_stop", {"index": 0})
-        yield self._create_sse_event("message_delta", {"delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": final_usage["output_tokens"]}})
+        yield self._create_sse_event("message_delta", {
+            "delta": {"stop_reason": stop_reason},
+            "usage": {"output_tokens": final_usage["output_tokens"]}
+        })
         yield self._create_sse_event("message_stop", {})
 
     def _create_sse_event(self, event: str, data: Dict) -> str:
