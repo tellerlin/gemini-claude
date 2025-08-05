@@ -67,6 +67,17 @@ def update_env_file(keys_to_keep: List[str], env_file_path: str):
     updated_keys_str = ",".join(keys_to_keep)
 
     try:
+        # 确保原文件存在
+        if not os.path.exists(original_env_path):
+            print(f"{bcolors.FAIL}Error: Original .env file not found at {original_env_path}{bcolors.ENDC}")
+            return
+            
+        # 确保目标目录存在且有写权限
+        target_dir = os.path.dirname(new_env_path) if os.path.dirname(new_env_path) else '.'
+        if not os.access(target_dir, os.W_OK):
+            print(f"{bcolors.FAIL}Error: No write permission for directory {target_dir}{bcolors.ENDC}")
+            return
+            
         with open(original_env_path, 'r') as f_in, open(new_env_path, 'w') as f_out:
             for line in f_in:
                 if line.strip().startswith('GEMINI_API_KEYS='):
@@ -78,17 +89,43 @@ def update_env_file(keys_to_keep: List[str], env_file_path: str):
     except Exception as e:
         print(f"\n{bcolors.FAIL}Error writing updated .env file: {e}{bcolors.ENDC}")
 
+def find_env_file():
+    """
+    Find the .env file in the correct location based on the environment.
+    """
+    # 可能的 .env 文件位置（按优先级排序）
+    possible_paths = [
+        '/app/.env',  # Docker 容器内的挂载位置
+        './.env',     # 当前目录
+        '.env',       # 当前目录（相对路径）
+        '/data/.env'  # 备用位置
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            abs_path = os.path.abspath(path)
+            print(f"{bcolors.OKCYAN}Found .env file at: {abs_path}{bcolors.ENDC}")
+            return abs_path
+    
+    print(f"{bcolors.FAIL}Error: No .env file found in any of the expected locations:{bcolors.ENDC}")
+    for path in possible_paths:
+        print(f"  - {path}")
+    return None
+
 def main():
     """
     Main function to run the API key checker tool.
     """
-    data_dir = "/data"
-    if os.path.exists(data_dir):
-        env_file_path = os.path.join(data_dir, '.env')
-        os.chdir(data_dir)
-    else:
-        env_file_path = '.env'
+    print(f"{bcolors.HEADER}=== Gemini API Key Checker ==={bcolors.ENDC}")
+    print(f"Current working directory: {os.getcwd()}")
+    print(f"Running as user: {os.getenv('USER', 'unknown')}")
+    
+    # 查找 .env 文件
+    env_file_path = find_env_file()
+    if not env_file_path:
+        sys.exit(1)
 
+    # 加载环境变量
     load_dotenv(dotenv_path=env_file_path)
 
     api_keys_str = os.getenv("GEMINI_API_KEYS", "")
@@ -98,7 +135,7 @@ def main():
         print(f"{bcolors.FAIL}Error: No valid API keys found in {env_file_path}.{bcolors.ENDC}")
         sys.exit(1)
 
-    print(f"{bcolors.HEADER}--- Step 1: Pre-processing Keys ---{bcolors.ENDC}")
+    print(f"\n{bcolors.HEADER}--- Step 1: Pre-processing Keys ---{bcolors.ENDC}")
     print(f"Found {len(initial_keys)} key(s) in .env file.")
 
     valid_format_keys, invalid_format_keys = [], []
