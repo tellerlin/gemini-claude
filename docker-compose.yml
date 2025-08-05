@@ -14,5 +14,7 @@ services:
     volumes:
       # Mount the logs directory
       - ./logs:/app/logs
-      # Mount the .env file directly so the script can read and write to it.
-      - ./.env:/app/.env
+      # Mount the entire project directory to /data with write permissions
+      - .:/data
+    # Run as root for script execution (allows writing files)
+    user: "0:0"
