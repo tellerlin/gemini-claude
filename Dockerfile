@@ -14,6 +14,9 @@ COPY --from=builder /install /install
 # Add the /install/bin directory to the PATH
 ENV PATH=/install/bin:$PATH
 
+# Add the site-packages directory to PYTHONPATH
+ENV PYTHONPATH=/install/lib/python3.11/site-packages
+
 WORKDIR /app
 COPY --chown=appuser:appuser ./src .
 
