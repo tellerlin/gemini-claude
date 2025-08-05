@@ -14,6 +14,8 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/install/lib/python3.11/site-packages
+# Add /install/bin to the PATH
+ENV PATH=/install/bin:$PATH
 
 RUN useradd --create-home --shell /bin/bash appuser
 
